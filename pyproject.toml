@@ -1,7 +1,7 @@
 [project]
 name = "data-generation"
 version = "0.1.0"
-description = "Add your description here"
+description = "Data generating for IIoT (Industrial Internet of Things) digital twin system."
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
