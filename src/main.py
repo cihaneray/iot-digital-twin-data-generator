@@ -12,10 +12,17 @@ config = GlobalSimulationConfig(
     active_machines_per_batch=33,
     cycle_length_min=1,
     cycle_length_max=5,
-    stress_multiplier=1.5,      # Machines wear out 50% faster
-    failure_threshold=80.0     # Machines are slightly more durable
+
+    stress_multiplier=0.25,
+    failure_threshold=5.0,
+
+    ambient_temp_mean=22.0,
+    ambient_temp_amplitude=8.0,
+
+    imbalance_probability=0.1,
+    bearing_fault_probability=0.1
 )
 
-# GenerateData.py remains largely the same but passes 'config' to machines
 generate = GenerateData(config, 'data')
+
 generate.generate()
