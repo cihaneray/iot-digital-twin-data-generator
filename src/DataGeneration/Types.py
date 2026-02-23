@@ -3,7 +3,7 @@ from datetime import datetime, timedelta
 
 
 @dataclass
-class SimulationParameters:
+class GlobalSimulationConfig:
     seed: int
     date_from: datetime
     date_to: datetime
@@ -14,14 +14,9 @@ class SimulationParameters:
     cycle_length_min: int
     cycle_length_max: int
 
+    # Stress and Degradation Controls
+    stress_multiplier: float = 1.0  # Scales the speed/temp wear calculation
+    failure_threshold: float = 100.0  # Damage level at which the machine fails
+
     def __post_init__(self):
         assert self.date_from < self.date_to, "Date from must be before date to."
-
-
-@dataclass
-class SensorParameters:
-    t_max: int = 10000
-    d: float = 0.05
-    a: float = -0.3
-    b: float = 0.2
-    th: float = 0.45

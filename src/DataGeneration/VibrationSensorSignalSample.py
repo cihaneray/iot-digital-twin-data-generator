@@ -6,7 +6,7 @@ class VibrationSensorSignalSample:
     CUTOFF: int = 150
 
     def __init__(self, w, a, fundamental_from, fundamental_to, health_index=1.0,
-                 t=0, interval=1, previous_sample=None, sample_rate=1024):
+                 t=0, interval: int = 1, previous_sample=None, sample_rate: int = 1024):
         self.__last_cumsum = None
         self.interval = interval
         self.sample_rate = sample_rate

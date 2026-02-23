@@ -1,33 +1,22 @@
 import datetime
-import math
 import random
+
 import pandas as pd
 from tqdm import tqdm
 
 from .RotationalMachine import RotationalMachine
-from .Types import SimulationParameters, SensorParameters
+from .Types import GlobalSimulationConfig
 
 
 class GenerateData:
-    def __init__(self, simulation_parameters: SimulationParameters, sensor_parameters: SensorParameters,
-                 data_dir: str = 'data') -> None:
+    def __init__(self, simulation_parameters: GlobalSimulationConfig, data_dir: str = 'data') -> None:
         self.data_dir = data_dir
         self.simulation_parameters = simulation_parameters
-        self.sensor_parameters = sensor_parameters
         random.seed(self.simulation_parameters.seed)
 
-    @staticmethod
-    def create_machines(n):
-        """Initializes machines without external health iterators."""
-        return [RotationalMachine('M_{0:04d}'.format(i)) for i in range(n)]
-
-    @staticmethod
-    def h_generator(ttf, d_val, a_val, b_val, th_val=0.0):
-        for remain_time in range(ttf, -1, -1):
-            h_val = 1 - d_val - math.exp(a_val * remain_time ** b_val)
-            if h_val < th_val:
-                break
-            yield remain_time, h_val
+    def create_machines(self, n):
+        """Initializes machines using the new GlobalSimulationConfig."""
+        return [RotationalMachine('M_{0:04d}'.format(i), self.simulation_parameters) for i in range(n)]
 
     @staticmethod
     def sample(machines, m):
@@ -48,8 +37,8 @@ class GenerateData:
 
                 for m in s:
                     if m.broken:
-                        # Repair: Reset the specific machine instance
-                        m.__init__(m.name)
+                        # Repair: Reset instance with GlobalSimulationConfig
+                        m.__init__(m.name, self.simulation_parameters)
                         errors.append({
                             'timestamp': self.simulation_parameters.date_from,
                             'machineID': m.name,
@@ -58,7 +47,6 @@ class GenerateData:
                         })
                         continue
 
-                    # Determine duty cycle length
                     l = random.randint(self.simulation_parameters.cycle_length_min,
                                        self.simulation_parameters.cycle_length_max)
                     offset = random.randint(0, 60 - l)
@@ -78,10 +66,10 @@ class GenerateData:
                             state['machineID'] = m.name
                             telemetry.append(state)
 
-                            # If the machine naturally slowed to 0 after cooldown
                             if not state['speed'] and i >= cooldown_point:
                                 break
                         except Exception as e:
+                            # Catch physics-based 'Mechanical Failure'
                             errors.append({
                                 'timestamp': ts,
                                 'machineID': m.name,
@@ -91,7 +79,7 @@ class GenerateData:
                             break
 
                 if telemetry:
-                    # Parquet export - vibration is excluded to save space
+                    # Drop vibration for Parquet storage; health_index is preserved
                     telemetry_df = pd.DataFrame(telemetry).drop('vibration', axis=1, errors='ignore')
                     telemetry_df.index = telemetry_df['timestamp']
                     del telemetry_df['timestamp']
