@@ -82,7 +82,7 @@ class RotationalMachine:
         modified_A = [amp * vibration_health_modifier for amp in self.A]
 
         self.__vibration_sample = VibrationSensorSignalSample(
-            self.W, modified_A, v_from, v_to, t=self.t)
+            self.W, modified_A, v_from, v_to, health_index=h, t=self.t)
 
         state = {
             'speed_desired': self.speed_desired,
