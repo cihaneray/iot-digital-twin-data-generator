@@ -1,87 +1,97 @@
+import math
 import random
-
-import numpy as np
 
 from .VibrationSensorSignalSample import VibrationSensorSignalSample
 
 
 class RotationalMachine:
-    ambient_temperature: float = 20.0  # degrees Celsius
-    max_temperature: float = 120.0
-    ambient_pressure: float = 101.0  # kPa
+    AMBIENT_TEMPERATURE: float = 20.0  # degrees Celsius
+    MAX_TEMPERATURE: float = 120.0
+    AMBIENT_PRESSURE: float = 101.0  # kPa
+    FAILURE_THRESHOLD: float = 100.0  # Damage threshold where failure occurs
 
-    def __init__(self, name, h1, h2):
+    def __init__(self, name):
+        self.name = name
         self.W = [1 / 2, 1, 2, 3, 5, 7, 12, 18]
         self.A = [1, 5, 80, 2 / 3, 8, 2, 14, 50]
         self.t = 0
-        self.name = name
-        self.speed = 0
-        self.speed_desired = 0
-        self.temperature = RotationalMachine.ambient_temperature
-        self.pressure = RotationalMachine.ambient_pressure
-        self.pressure_factor = 2
-        self.__vibration_sample = None
-        self.__h1 = h1
-        self.__h2 = h2
-        self.broken = False
+        self.speed = 0.0
+        self.speed_desired = 0.0
+        self.temperature = self.AMBIENT_TEMPERATURE
+        self.pressure = self.AMBIENT_PRESSURE
 
-    def set_health(self, h1, h2):
-        self.__h1 = h1
-        self.__h2 = h2
+        # State-based health variables
+        self.accumulated_damage = 0.0
         self.broken = False
+        self.__vibration_sample = None
+
+    @property
+    def health_index(self):
+        """Returns a health factor from 1.0 (new) to 0.0 (failed)."""
+        return max(0.0, 1.0 - (self.accumulated_damage / self.FAILURE_THRESHOLD))
 
     def set_speed(self, speed):
         self.speed_desired = speed
 
-    @staticmethod
-    def __g(v, min_v, max_v, target, rate):
-        delta = (target - v) * rate
-        return max(min(v + delta, max_v), min_v)
+    def calculate_wear_delta(self):
+        """Calculates damage increment based on current physics."""
+        # Base wear per simulation step
+        base_wear = 0.001
 
-    @staticmethod
-    def noise(magnitude):
-        return random.uniform(-magnitude, magnitude)
+        # Speed stress: wear increases quadratically with speed
+        speed_factor = (self.speed / 1000) ** 2
+
+        # Thermal stress: wear increases exponentially if above 80 degrees
+        temp_factor = math.exp((self.temperature - 80) / 20) if self.temperature > 80 else 1.0
+
+        return base_wear * speed_factor * temp_factor
 
     def next_state(self):
-        try:
-            _, h1 = next(self.__h1)
-        except:
-            self.broken = True
-            raise Exception("F1")
+        if self.broken:
+            raise Exception("Machine is in a failed state. Repair required.")
 
-        try:
-            _, h2 = next(self.__h2)
-        except:
-            self.broken = True
-            raise Exception("F2")
+        # 1. Accumulate Damage
+        damage_step = self.calculate_wear_delta()
+        self.accumulated_damage += damage_step
 
+        h = self.health_index
+        if h <= 0:
+            self.broken = True
+            raise Exception("Mechanical Failure: Failure Threshold Reached")
+
+        # 2. Physics updates influenced by health (h)
+        # As health decreases (h -> 0), friction increases temperature and reduces speed efficiency
         v_from = self.speed / 60
-        self.speed = (self.speed + (2 - h2) * self.speed_desired) / 2
+
+        # Lower health makes it harder to reach the desired speed
+        efficiency = 0.5 + (0.5 * h)
+        self.speed = (self.speed + (efficiency * self.speed_desired)) / 2
         v_to = self.speed / 60
 
-        self.temperature = (2 - h1) * self.__g(self.temperature, self.ambient_temperature, self.max_temperature,
-                                               self.speed / 10, 0.01 * self.speed / 1000)
-        self.pressure = h1 * self.__g(self.pressure, self.ambient_pressure, np.inf, self.speed * self.pressure_factor,
-                                      0.3 * self.speed / 1000)
+        # Thermal dynamics with health-induced friction
+        target_temp = (self.speed / 10) * (2 - h)  # Degraded machines run hotter
+        temp_gain_rate = 0.01 * (self.speed / 1000)
+        self.temperature += (target_temp - self.temperature) * temp_gain_rate
+
+        # Pressure increases as health declines (internal resistance)
+        target_pressure = (self.speed * 2) / max(h, 0.1)
+        self.pressure += (target_pressure - self.pressure) * 0.1
+
+        # 3. Vibration - Increased noise and amplitude as health drops
+        vibration_health_modifier = 1.0 + (1.0 - h) * 5
+        modified_A = [amp * vibration_health_modifier for amp in self.A]
+
         self.__vibration_sample = VibrationSensorSignalSample(
-            # self.W, self.A, v_from, v_to, t = self.t, previous_sample = self.__vibration_sample)
-            self.W, self.A, v_from, v_to, t=self.t)
+            self.W, modified_A, v_from, v_to, t=self.t)
 
         state = {
             'speed_desired': self.speed_desired,
-            'ambient_temperature': self.ambient_temperature + self.noise(0.1),
-            'ambient_pressure': self.ambient_pressure + self.noise(0.1),
-            'speed': self.speed + self.noise(5),
-            'temperature': self.temperature + self.noise(0.1),
-            'pressure': self.pressure + self.noise(20),
-            'vibration': self.__vibration_sample
+            'ambient_temperature': self.AMBIENT_TEMPERATURE + random.uniform(-0.1, 0.1),
+            'speed': self.speed + random.uniform(-5, 5),
+            'temperature': self.temperature + random.uniform(-0.1, 0.1),
+            'pressure': self.pressure + random.uniform(-20, 20),
+            'health_index': round(h, 4)
         }
 
         self.t += 1
-
-        for key in state:
-            value = state[key]
-            if isinstance(value, (int, float)):
-                state[key] = round(value, 2)
-
-        return state
+        return {k: round(v, 2) if isinstance(v, (int, float)) else v for k, v in state.items()}
