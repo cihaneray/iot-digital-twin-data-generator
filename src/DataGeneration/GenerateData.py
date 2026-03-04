@@ -108,11 +108,12 @@ class GenerateData:
             cycle_second = second % duration
             speed = 0.0 if cycle_second >= cooldown_point else 1000.0
 
-            # Approximate temperature for wear delta — use a fixed mid-cycle estimate
-            # to avoid re-running full thermal dynamics
+            approx_health = max(0.0, 1.0 - damage_snapshot / threshold)
+            health_penalty = 1.0 + 0.5 * (1.0 - approx_health)
+            friction_heat = 1.25 if (machine.fault_active and machine.fault_type == "bearing") else 1.0
             approx_temp = (
                     machine.ambient_temperature
-                    + (speed / 10.0) * (2.0 - max(0.0, 1.0 - damage_snapshot / threshold))
+                    + (speed / 1000.0) * 53.3 * health_penalty * friction_heat
             )
 
             wear_delta = RotationalMachine.compute_wear_step(
@@ -195,7 +196,7 @@ class GenerateData:
                 if rul_seconds is not None:
                     rul_seconds = max(0.0, rul_seconds)
 
-                state = machine.next_state(failure_time=rul_seconds)
+                state = machine.next_state(rul_seconds=rul_seconds)
 
                 if state["fault_active"] and machine.name not in self.active_faults_logged:
                     error_rows.append({

@@ -34,20 +34,6 @@ class RotationalMachine:
         self.W = [1 / 2, 1, 2, 3, 5, 7, 12, 18]
         self.A = [1, 5, 80, 2 / 3, 8, 2, 14, 50]
 
-        self.t: int = 0
-        self.speed: float = 0.0
-        self.speed_desired: float = 0.0
-        self.ambient_temperature: float = self.config.ambient_temp_mean
-        self.temperature: float = self.ambient_temperature
-        self.pressure: float = self.config.pressure_base
-        self.voltage: float = self.config.voltage_base
-        self.accumulated_damage: float = 0.0
-        self.broken: bool = False
-        self.fault_active: bool = False
-        self._over_temp: bool = False
-        self.fault_type: str = ""
-        self._last_cumsum: float = 0.0
-
         self.reset()
 
     def reset(self):
@@ -188,8 +174,7 @@ class RotationalMachine:
         # Capped at 1.5x penalty (was 2.0x) to prevent explosion at h=0
         health_penalty = 1.0 + (0.5 * (1.0 - self.health_index))
 
-        # Lowered base rise from 55.0 to 45.0
-        heat_generation = (self.speed / 1000.0) * 45.0 * health_penalty * friction_heat
+        heat_generation = (self.speed / 1000.0) * 53.3 * health_penalty * friction_heat
 
         target_temp = self.ambient_temperature + heat_generation
 
@@ -235,10 +220,17 @@ class RotationalMachine:
 
         self.voltage = base_v - load_sag - fault_sag + noise
 
-    def next_state(self, failure_time: float | None = None) -> dict:
+    def next_state(self, rul_seconds: float | None = None) -> dict:
         """
         Advance the machine one second.
         Returns the Azure-compatible telemetry dict.
+
+        Parameters
+        ----------
+        rul_seconds : float | None
+            Pre-computed remaining useful life in seconds (from GenerateData).
+            When provided, the value is written directly to the ``rul_seconds``
+            output column. Pass None to omit the column (default).
         """
         if self._over_temp:
             raise Exception("Over-Temperature Failure")
@@ -321,19 +313,16 @@ class RotationalMachine:
             "temperature": round(self.temperature + self._rng.uniform(-0.1, 0.1), 2),
             "pressure": round(self.pressure, 2),
             "ambient_temperature": round(self.ambient_temperature, 2),
-            # New Azure Fields
             "voltage": round(self.voltage, 2),
             "vibration_intensity": round(vibration_intensity, 2),
-
-            # Ground Truths
             "health_index": round(h, 4),
             "fault_type": self.fault_type,
             "fault_active": int(self.fault_active),
             "vibration_pcm": pcm,
         }
 
-        if failure_time is not None:
-            state["rul_seconds"] = max(0.0, failure_time)
+        if rul_seconds is not None:
+            state["rul_seconds"] = max(0.0, rul_seconds)
         else:
             state["rul_seconds"] = None
 
