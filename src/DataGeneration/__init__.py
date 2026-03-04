@@ -1,8 +1,13 @@
-from .VibrationSensorSignalSample import VibrationSensorSignalSample
-from .RotationalMachine import RotationalMachine
 from .Types import GlobalSimulationConfig
 from .GenerateData import GenerateData
+from .RotationalMachine import RotationalMachine
+from .VibrationSensorSignalSample import VibrationSensorSignalSample
 
-__version__ = "0.1.2"
+__version__ = "0.2.0"
 
-__all__ = ["VibrationSensorSignalSample", "RotationalMachine", "GlobalSimulationConfig", "GenerateData"]
+__all__ = [
+    "GlobalSimulationConfig",
+    "GenerateData",
+    "RotationalMachine",
+    "VibrationSensorSignalSample",
+]
