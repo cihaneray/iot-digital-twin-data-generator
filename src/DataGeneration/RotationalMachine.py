@@ -169,28 +169,31 @@ class RotationalMachine:
 
     def _update_temperature(self):
         """
-        Thermal model calibrated to standard operating ranges.
-        Healthy @ Full Speed: ~75°C
-        Faulty/Worn @ Full Speed: ~90°C - 100°C
-        Max: 120°C
+        Thermal model calibrated to avoid premature 'Over-Temperature' aborts.
+
+        New Calibration:
+        - Healthy @ Full Speed: ~65°C (was ~77°C)
+        - Dead Bearing @ Full Speed: ~112°C (was ~187°C)
+        - Max Limit: 120°C
         """
         friction_heat = 1.0
         if self.fault_active:
-            # Bearings generate significant heat when failing
+            # Reduced multipliers to prevent unrealistic thermal runaway
             if self.fault_type == "bearing":
-                friction_heat = 1.5
+                friction_heat = 1.25  # Was 1.5
             elif self.fault_type == "imbalance":
-                friction_heat = 1.2
+                friction_heat = 1.1  # Was 1.2
 
-        # Efficiency drops as health drops, generating more waste heat
-        health_penalty = (2.0 - self.health_index)  # 1.0 (good) -> 2.0 (dead)
+        # Efficiency drops as health drops.
+        # Capped at 1.5x penalty (was 2.0x) to prevent explosion at h=0
+        health_penalty = 1.0 + (0.5 * (1.0 - self.health_index))
 
-        # Scale factor tuned so 1000 RPM = ~55 degree rise over ambient
-        heat_generation = (self.speed / 1000.0) * 55.0 * health_penalty * friction_heat
+        # Lowered base rise from 55.0 to 45.0
+        heat_generation = (self.speed / 1000.0) * 45.0 * health_penalty * friction_heat
 
         target_temp = self.ambient_temperature + heat_generation
 
-        # Thermal inertia: Temperature doesn't change instantly
+        # Thermal inertia
         thermal_rate = 0.005 + (0.01 * self.speed / 1000.0)
         self.temperature += (target_temp - self.temperature) * thermal_rate
         self.temperature = min(self.temperature, self.MAX_TEMPERATURE)
