@@ -4,24 +4,6 @@ from datetime import datetime, timedelta
 
 @dataclass
 class GlobalSimulationConfig:
-    """
-    Configuration for the rotational machine simulation.
-
-    Telemetry output columns (per second, per machine):
-        machineID, speed_desired, speed, load, temperature, pressure,
-        ambient_temperature, voltage, vibration_intensity,
-        health_index, fault_type, fault_active, rul_seconds
-
-    Vibration output:
-        .npz files keyed by "<machineID>_<batch_ISO_timestamp>", one file per batch.
-        Each value is a single concatenated int16 PCM array covering the whole
-        active cycle (sample_rate × active_seconds samples). This replaces the
-        previous per-second keying scheme which generated 160× more keys.
-
-    Logs:
-        Single parquet at logs/logs.parquet with columns: machineID, level, code.
-    """
-
     seed: int
     date_from: datetime
     date_to: datetime

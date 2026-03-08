@@ -9,19 +9,17 @@ from .VibrationSensorSignalSample import VibrationSensorSignalSample
 
 
 class RotationalMachine:
-    """
-    Physics-based simulation of a rotational machine with degradation modeling.
-    Aligned to standard Predictive Maintenance datasets (e.g., Azure PDM).
-    """
-
     MAX_TEMPERATURE: float = 120.0
-    MIN_PRESSURE: float = 70.0  # kPa — Azure-aligned lower bound
+    MIN_PRESSURE: float = 70.0
 
     def __init__(self, name: str, config: GlobalSimulationConfig):
+        self._last_cumsum = None
+        self.broken = None
+        self._over_temp = None
+        self.speed_desired: float = 0.0
         self.name = name
         self.config = config
 
-        # Per-machine RNG — seeded deterministically, isolated from other machines
         name_hash = int(hashlib.md5(name.encode()).hexdigest(), 16)
         self._rng = random.Random(config.seed ^ (name_hash & 0xFFFF_FFFF_FFFF_FFFF))
 
@@ -31,17 +29,11 @@ class RotationalMachine:
         self.W = [1 / 2, 1, 2, 3, 5, 7, 12, 18]
         self.A = [1, 5, 80, 2 / 3, 8, 2, 14, 50]
 
-        # With load_sag=15V and fault_sag=25V, the operating range is [150, 250] V.
         self._voltage_base: float = self._rng.uniform(190.0, 250.0)
 
-        # All mutable state is owned by reset(); call it to initialise.
-        self.reset()
+        self.__reset__()
 
-    def reset(self):
-        """
-        Resets the machine to a factory-fresh state.
-        Called on initialization and after a repair event.
-        """
+    def __reset__(self):
         self.t: int = 0
         self.speed: float = 0.0
         self.speed_desired: float = 0.0
@@ -55,10 +47,8 @@ class RotationalMachine:
         self.fault_active: bool = False
         self._over_temp: bool = False
 
-        # Uses the machine's own RNG, so fault assignment is reproducible per machine
         self.fault_type: str = self._assign_fault_type()
 
-        # Scalar phase accumulator — avoids a linked-list chain of sample objects
         self._last_cumsum: float = 0.0
 
     def _assign_fault_type(self) -> str:
@@ -91,23 +81,6 @@ class RotationalMachine:
             fault_active: bool,
             fault_type: str,
     ) -> float:
-        """
-        Base wear-rate coefficient (per second) *before* the damage-acceleration
-        factor is applied.
-
-        The full wear ODE is:
-            d(damage)/dt = base_rate * (1 + 0.5 * damage)
-
-        Separating base_rate from the acceleration term allows the analytical
-        RUL estimator (GenerateData._estimate_failure_time) to solve the ODE
-        in closed form rather than stepping second-by-second.
-
-        FIX #11: `load` (0–100 %) is now an explicit input.
-            load_factor = 0.5 + 0.5 * (load / 100)
-            At load_base=85 %: factor ≈ 0.925
-            At load=0 %:       factor = 0.50  (idle spin, half the wear)
-            At load=100 %:     factor = 1.00  (full load)
-        """
         if speed <= 0.1:
             return 0.0
 
@@ -122,10 +95,8 @@ class RotationalMachine:
 
         load_factor = 0.5 + 0.5 * (load / 100.0)
 
-        # Speed factor: kinetic energy proxy (v²)
         speed_factor = (speed / 1000.0) ** 2
 
-        # Thermal stress (Arrhenius-like, kicks in above 80 °C)
         temp_factor = (
             math.exp((temperature - 80.0) / 20.0)
             if temperature > 80.0
@@ -144,18 +115,13 @@ class RotationalMachine:
             fault_type: str,
             accumulated_damage: float,
     ) -> float:
-        """
-        Full per-second wear delta = base_rate × acceleration_factor.
-        """
         base_rate = RotationalMachine.compute_base_wear_rate(
             stress_multiplier, speed, load, temperature, fault_active, fault_type
         )
-        # Exponential acceleration: wear rate grows with accumulated damage
         acceleration_factor = 1.0 + accumulated_damage * 0.5
         return base_rate * acceleration_factor
 
     def _calculate_wear_delta(self) -> float:
-        """Instance wrapper — passes the current machine state to the static wear model."""
         return self.compute_wear_step(
             self.config.stress_multiplier,
             self.speed,
@@ -167,10 +133,6 @@ class RotationalMachine:
         )
 
     def _update_fault_active(self):
-        """
-        Probabilistic fault onset below health = 0.85.
-        Once active, a fault never deactivates (physical irreversibility).
-        """
         if self.fault_active or self.fault_type == "normal":
             return
 
@@ -185,29 +147,11 @@ class RotationalMachine:
             self.fault_active = True
 
     def _update_load(self):
-        """
-        At full speed (1000 RPM) load converges to config.load_base (default 85 %).
-        At zero speed load decays to zero.  The lag (rate = 0.1) is slower than
-        speed dynamics so that sudden speed changes produce a realistic load
-        transient rather than an instantaneous jump.
-        """
         target_load = (self.speed / 1000.0) * self.config.load_base
         self.load += (target_load - self.load) * 0.1
         self.load = max(0.0, min(100.0, self.load))
 
     def _update_temperature(self):
-        """
-        Thermal model.
-
-        Calibration targets at full speed (1000 RPM):
-            Healthy, no fault          h=1.0: ~75 °C   (well within operating range)
-            Degraded, no fault         h=0.0: ~102 °C  (elevated but survivable)
-            End-of-life, bearing fault h=0.0: ~122 °C  → Over-Temperature Failure ✓
-
-        Coefficient 53.3 was chosen so that OTF (120 °C) is only reachable for
-        machines that are both severely degraded AND have active bearing friction.
-        The previous value of 45.0 made OTF physically unreachable (max ~106 °C).
-        """
         friction_heat = 1.0
         if self.fault_active:
             if self.fault_type == "bearing":
@@ -224,28 +168,11 @@ class RotationalMachine:
         self.temperature = min(self.temperature, self.MAX_TEMPERATURE)
 
     def _update_pressure(self):
-        """
-        Pressure is load-dependent (speed proxy) only — not health-dependent —
-        to avoid feature leakage that would let ML models "cheat" via pressure.
-
-        Sensor jitter (±1.5 kPa) is applied at read time in next_state, consistent
-        with all other sensors.  Previously ±2 kPa noise was added inside the lag
-        update, which compounded into the filter state and caused ~2 kPa of
-        unbounded drift.
-        """
         target = self.config.pressure_base * (0.8 + 0.2 * (self.speed / 1000.0))
         self.pressure += (target - self.pressure) * 0.2
         self.pressure = max(self.MIN_PRESSURE, self.pressure)
 
     def _update_voltage(self):
-        """
-        Per-machine base voltage (set once at birth): U[190, 250] V
-        Load sag at full speed:  −15 V  → min with no fault = 175 V
-        Fault sag (dead bearing): −25 V  → min overall     = 150 V  ✓
-
-        Previously: fixed base 230 V, load sag 5 V, fault sag 10 V → range [215, 232],
-        which was far narrower than the 150–250 V Azure target.
-        """
         load_sag = 15.0 * (self.speed / 1000.0)
 
         fault_sag = 0.0
@@ -256,40 +183,16 @@ class RotationalMachine:
         self.voltage = self._voltage_base - load_sag - fault_sag + noise
 
     def next_state(self, rul_seconds: float | None = None) -> dict:
-        """
-        Advance the machine by one second and return the observable state.
-
-        Parameters
-        ----------
-        rul_seconds : float | None
-            Pre-computed remaining useful life in seconds (supplied by GenerateData).
-            Written directly to the output column when provided; None omits it.
-
-        Returns
-        -------
-        dict
-            Scalar sensor readings plus ``vibration_pcm`` (numpy int16 array).
-            The caller (GenerateData) pops ``vibration_pcm`` and handles storage.
-
-        Raises
-        ------
-        Exception
-            "Mechanical Failure: <fault_type>" when health reaches zero.
-            "Over-Temperature Failure" when temperature reaches MAX_TEMPERATURE.
-        """
         if self._over_temp:
             raise Exception("Over-Temperature Failure")
         if self.broken:
             raise Exception(f"Mechanical Failure: {self.fault_type}")
 
-        # 1. Fault onset (probabilistic)
         self._update_fault_active()
 
-        # 2. Damage accumulation
         self.accumulated_damage += self._calculate_wear_delta()
         h = self.health_index
 
-        # 3. Terminal failure checks
         if h <= 0.0:
             self.broken = True
             raise Exception(f"Mechanical Failure: {self.fault_type}")
@@ -298,7 +201,6 @@ class RotationalMachine:
             self._over_temp = True
             raise Exception("Over-Temperature Failure")
 
-        # 4. Speed dynamics — first-order lag toward target
         efficiency = max(0.1, 0.5 + 0.5 * h)
         inertia = 0.05
         if self.speed < self.speed_desired:
@@ -309,13 +211,11 @@ class RotationalMachine:
         v_from = self.speed / 60.0
         v_to = self.speed / 60.0
 
-        # 5. Subsystem updates
         self._update_load()
         self._update_temperature()
         self._update_pressure()
         self._update_voltage()
 
-        # 6. Vibration signal generation
         modified_A = list(self.A)
         if self.fault_active and self.fault_type == "imbalance":
             modifier = 4.0 * (0.85 - h) / 0.85
@@ -342,7 +242,6 @@ class RotationalMachine:
         rms = float(np.sqrt(np.mean(float_signal ** 2)))
         vibration_intensity = 20.0 + 30.0 * math.tanh(rms * 3.5)
 
-        # 8. Assemble output — sensor noise applied at read time only
         reported_speed = max(0.0, self.speed + self._rng.uniform(-5.0, 5.0))
         reported_load = max(0.0, self.load + self._rng.uniform(-2.0, 2.0))
         reported_press = max(self.MIN_PRESSURE,

@@ -118,7 +118,7 @@ class GenerateData:
     def _handle_broken_machine(
             self, machine: RotationalMachine, current_time: datetime.datetime
     ) -> dict:
-        machine.reset()
+        machine.__reset__()
         self.active_faults_logged.discard(machine.name)
         return {
             "timestamp": current_time,

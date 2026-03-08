@@ -3,26 +3,11 @@ from scipy.interpolate import interp1d
 
 
 class VibrationSensorSignalSample:
-    """
-    Generates a synthetic vibration PCM signal for a rotational machine.
-
-    Phase continuity across consecutive calls is maintained via `prev_cumsum`,
-    a plain float passed in from the caller. This avoids building a linked-list
-    chain of sample objects (which caused unbounded memory growth in the old design).
-
-    Call `pcm()` to compute the signal. `last_cumsum` is populated after that call
-    and should be stored by the caller for the next sample.
-    """
-
     CUTOFF: int = 150
 
-    # Characteristic frequency multipliers (dimensionless orders of fundamental)
-    # Imbalance:  dominant at 1× and 2× running speed
     IMBALANCE_ORDERS = [1.0, 2.0]
     IMBALANCE_AMPLITUDES = [8.0, 3.0]
 
-    # Ball-pass frequency outer race (BPFO) ≈ 3.5×, inner (BPFI) ≈ 5.4×,
-    # ball spin frequency (BSF) ≈ 2.3× — representative values for a 6-ball bearing.
     BEARING_ORDERS = [2.3, 3.5, 5.4]
     BEARING_AMPLITUDES = [5.0, 8.0, 12.0]
 
@@ -58,10 +43,6 @@ class VibrationSensorSignalSample:
 
     @property
     def last_cumsum(self) -> float:
-        """
-        The final phase accumulator value after signal generation.
-        Raises RuntimeError if accessed before pcm() has been called.
-        """
         if self._last_cumsum is None:
             raise RuntimeError(
                 "last_cumsum is not available until pcm() has been called."
@@ -69,10 +50,6 @@ class VibrationSensorSignalSample:
         return self._last_cumsum
 
     def pcm(self) -> np.ndarray:
-        """
-        Compute and return the int16 PCM vibration signal.
-        Must be called before accessing `last_cumsum`.
-        """
         ts = np.linspace(self.t, self.t + self.interval, num=self._N, endpoint=False)
 
         x = np.array([0, self.interval]) + self.t
@@ -104,7 +81,6 @@ class VibrationSensorSignalSample:
                 and self.health_index < 0.7
                 and np.mean(f) > 1.0
         ):
-            # Impact repetition rate uses BPFO order (3.5×) as the dominant defect frequency
             impact_freq_factor = self.BEARING_ORDERS[1]  # 3.5
             impact_points = np.where(np.diff(np.floor(fi * impact_freq_factor)) > 0)[0]
 
