@@ -8,13 +8,18 @@ class GlobalSimulationConfig:
     Configuration for the rotational machine simulation.
 
     Telemetry output columns (per second, per machine):
-        machineID, speed_desired, speed, temperature, pressure,
+        machineID, speed_desired, speed, load, temperature, pressure,
         ambient_temperature, voltage, vibration_intensity,
         health_index, fault_type, fault_active, rul_seconds
 
     Vibration output:
-        .npz files keyed by "<machineID>_<ISO timestamp>", one file per batch.
-        Each value is an int16 PCM array at `vibration_sample_rate` Hz.
+        .npz files keyed by "<machineID>_<batch_ISO_timestamp>", one file per batch.
+        Each value is a single concatenated int16 PCM array covering the whole
+        active cycle (sample_rate × active_seconds samples). This replaces the
+        previous per-second keying scheme which generated 160× more keys.
+
+    Logs:
+        Single parquet at logs/logs.parquet with columns: machineID, level, code.
     """
 
     seed: int
@@ -41,19 +46,28 @@ class GlobalSimulationConfig:
     # Fault onset: higher = more abrupt transition (logistic curve steepness)
     fault_onset_sharpness: float = 20.0
 
-    # Pressure target (kPa).
-    # Typical Azure range: 75-115 kPa.
+    # Nominal operational load (%) at full speed.
+    # Drives the load_factor in wear calculation: 0.5 + 0.5 * (load / 100).
+    # At load_base=85%: factor ≈ 0.925.  At 0%: a factor = 0.5. At 100%: a factor = 1.0.
+    load_base: float = 85.0
+
+    # Pressure target (kPa). Azure PDM typical range: 75–115 kPa.
     pressure_base: float = 100.0
 
-    # Voltage target (Volts).
-    # Typical Azure range: 150-250 V.
+    # Voltage nominal (V). Per-machine base is drawn from U[190, 250] at birth;
+    # this value is the center of that distribution.
+    # Azure PDM typical range: 150–250 V.
     voltage_base: float = 230.0
+
+    # Vibration sample rate (Hz). 1024 captures harmonics up to ~500 Hz.
+    vibration_sample_rate: int = 1024
+
+    # "pyarrow" (default)
+    # Switch to "fastparquet" if your environment requires it.
+    parquet_engine: str = "pyarrow"
 
     # Error log flush interval (in batches). Keeps RAM usage bounded.
     error_flush_interval: int = 50
-
-    # Vibration sample rate (Hz). 1024 is enough for harmonics up to ~500 Hz.
-    vibration_sample_rate: int = 1024
 
     def __post_init__(self):
         assert self.date_from < self.date_to, "date_from must be before date_to."
@@ -72,4 +86,8 @@ class GlobalSimulationConfig:
         )
         assert (self.imbalance_probability + self.bearing_fault_probability) <= 1.0, (
             "imbalance_probability + bearing_fault_probability must not exceed 1.0."
+        )
+        assert 0.0 < self.load_base <= 100.0, "load_base must be in (0, 100]."
+        assert self.parquet_engine in ("pyarrow", "fastparquet"), (
+            "parquet_engine must be 'pyarrow' or 'fastparquet'."
         )

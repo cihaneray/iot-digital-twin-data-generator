@@ -6,27 +6,13 @@ import random
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
+from typing import cast, Literal
 
 from .RotationalMachine import RotationalMachine
 from .Types import GlobalSimulationConfig
 
 
 class GenerateData:
-    """
-    Orchestrates the multi-machine time-series simulation and writes outputs to disk.
-
-    Output layout
-    -------------
-    data/
-        telemetry/  → one parquet per batch (scalar sensor readings)
-                      columns: machineID, speed_desired, speed, temperature, pressure,
-                               ambient_temperature, health_index, fault_type,
-                               fault_active, rul_seconds
-        vibration/  → one .npz per batch (raw int16 PCM arrays)
-                      keys: "<machineID>_<ISO timestamp>"
-        logs/       → single parquet (WARNING / CRITICAL / INFO events)
-    """
-
     def __init__(
             self,
             simulation_parameters: GlobalSimulationConfig,
@@ -41,10 +27,7 @@ class GenerateData:
             os.makedirs(directory, exist_ok=True)
 
         self.simulation_parameters = simulation_parameters
-
-        # Seed module-level random only for sampling / ambient jitter
         random.seed(self.simulation_parameters.seed)
-
         self.active_faults_logged: set[str] = set()
 
     def create_machines(self, count: int) -> list[RotationalMachine]:
@@ -58,7 +41,6 @@ class GenerateData:
         return [machines[i] for i in sorted(random.sample(range(len(machines)), sample_size))]
 
     def get_ambient_temperature(self, current_time: datetime.datetime) -> float:
-        """Sinusoidal 24-hour ambient temperature cycle peaking at ~15:00."""
         seconds_in_day = 24 * 60 * 60
         elapsed = (
                 current_time
@@ -79,60 +61,59 @@ class GenerateData:
             sim_end: datetime.datetime,
             cycle_length: int,
     ) -> float | None:
-        """
-        Estimates the Unix timestamp at which `machine` will reach health_index=0,
-        by replaying damage accumulation with the same parameters used during the
-        live simulation cycle.
-
-        This is intentionally a *lightweight* estimate: it uses the same
-        `_calculate_wear_delta` logic but skips vibration generation and I/O.
-        The returned value is a float (seconds since epoch) or None if the machine
-        does not fail within the remaining simulation window.
-
-        The caller stores this value and passes it to `next_state(failure_time=...)`
-        so that `rul_seconds` in each telemetry row equals
-        `failure_timestamp - current_timestamp`.
-        """
-        # Snapshot the machine's current damage state
-        damage_snapshot = machine.accumulated_damage
+        damage = machine.accumulated_damage
         threshold = machine.config.failure_threshold
+        cfg = machine.config
 
-        duration = cycle_length * 60
-        cooldown_point = duration - 20
+        active_secs = max(1, cycle_length * 60 - 20)
+        batch_freq = cfg.telemetry_batch_frequency
 
-        current_time = sim_start
-        second = 0
+        current_batch = sim_start
 
-        # Shadow-simulate until failure or end of a window
-        while current_time < sim_end:
-            cycle_second = second % duration
-            speed = 0.0 if cycle_second >= cooldown_point else 1000.0
-
-            approx_health = max(0.0, 1.0 - damage_snapshot / threshold)
-            health_penalty = 1.0 + 0.5 * (1.0 - approx_health)
-            friction_heat = 1.25 if (machine.fault_active and machine.fault_type == "bearing") else 1.0
+        while current_batch < sim_end:
+            h = max(0.001, 1.0 - damage / threshold)
+            health_penalty = 1.0 + 0.5 * (1.0 - h)
+            friction = (
+                1.25 if (machine.fault_active and machine.fault_type == "bearing")
+                else 1.0
+            )
             approx_temp = (
                     machine.ambient_temperature
-                    + (speed / 1000.0) * 53.3 * health_penalty * friction_heat
+                    + 53.3 * health_penalty * friction
             )
 
-            wear_delta = RotationalMachine.compute_wear_step(
-                stress_multiplier=machine.config.stress_multiplier,
-                speed=speed,
+            base_rate = RotationalMachine.compute_base_wear_rate(
+                stress_multiplier=cfg.stress_multiplier,
+                speed=1000.0,
+                load=cfg.load_base,
                 temperature=approx_temp,
-                fault_active=machine.fault_active,  # Assuming the fault state persists in estimation
+                fault_active=machine.fault_active,
                 fault_type=machine.fault_type,
-                accumulated_damage=damage_snapshot
             )
-            damage_snapshot += wear_delta
 
-            if damage_snapshot >= threshold:
-                return current_time.timestamp()
+            if base_rate <= 0.0:
+                current_batch += batch_freq
+                continue
 
-            current_time += datetime.timedelta(seconds=1)
-            second += 1
+            t_fail_secs = (2.0 / base_rate) * math.log(
+                (threshold + 2.0) / (damage + 2.0)
+            )
 
-        return None  # Machine survives the full simulation window
+            if t_fail_secs <= active_secs:
+                return (
+                        current_batch + datetime.timedelta(seconds=t_fail_secs)
+                ).timestamp()
+
+            damage = (damage + 2.0) * math.exp(0.5 * base_rate * active_secs) - 2.0
+
+            if damage >= threshold:
+                return (
+                        current_batch + datetime.timedelta(seconds=active_secs)
+                ).timestamp()
+
+            current_batch += batch_freq
+
+        return None
 
     def _handle_broken_machine(
             self, machine: RotationalMachine, current_time: datetime.datetime
@@ -154,15 +135,6 @@ class GenerateData:
             cycle_length: int,
             offset: int,
     ) -> tuple[list[dict], dict[str, np.ndarray], list[dict]]:
-        """
-        Simulates one operational cycle for a single machine.
-
-        Returns
-        -------
-        telemetry_rows  : list of scalar-sensor dicts (one per second)
-        vibration_arrays: {key_str → int16 PCM array}
-        error_rows      : list of log event dicts
-        """
         machine.set_speed(1000)
         duration = cycle_length * 60
         cooldown_point = duration - 20
@@ -171,6 +143,9 @@ class GenerateData:
         vibration_arrays: dict[str, np.ndarray] = {}
         error_rows: list[dict] = []
 
+        cycle_pcm_buffers: list[np.ndarray] = []
+
+        # Initial failure estimate (before fault may activate)
         failure_timestamp = self._estimate_failure_time(
             machine, current_time, sim_end, cycle_length
         )
@@ -180,23 +155,33 @@ class GenerateData:
                 machine.set_speed(0)
 
             timestamp = current_time + datetime.timedelta(seconds=offset * 60 + second)
-
             machine.ambient_temperature = (
                     self.get_ambient_temperature(timestamp) + random.uniform(-0.1, 0.1)
             )
 
             try:
-                # Compute rul_seconds for this specific timestamp
                 rul_seconds = (
                     (failure_timestamp - timestamp.timestamp())
                     if failure_timestamp is not None
                     else None
                 )
-                # Clamp: machine cannot have negative RUL
                 if rul_seconds is not None:
                     rul_seconds = max(0.0, rul_seconds)
 
+                pre_fault = machine.fault_active
+
                 state = machine.next_state(rul_seconds=rul_seconds)
+
+                if machine.fault_active and not pre_fault:
+                    failure_timestamp = self._estimate_failure_time(
+                        machine, timestamp, sim_end, cycle_length
+                    )
+                    if failure_timestamp is not None:
+                        state["rul_seconds"] = max(
+                            0.0, failure_timestamp - timestamp.timestamp()
+                        )
+                    else:
+                        state["rul_seconds"] = None
 
                 if state["fault_active"] and machine.name not in self.active_faults_logged:
                     error_rows.append({
@@ -208,13 +193,11 @@ class GenerateData:
                     self.active_faults_logged.add(machine.name)
 
                 pcm_array: np.ndarray = state.pop("vibration_pcm")
-                ts_key = f"{machine.name}_{timestamp.strftime('%Y%m%dT%H%M%S')}"
-                vibration_arrays[ts_key] = pcm_array
+                cycle_pcm_buffers.append(pcm_array)
 
                 state["timestamp"] = timestamp
                 telemetry_rows.append(state)
 
-                # Early exit once machine has cooled and stopped
                 if not state["speed"] and second >= cooldown_point:
                     break
 
@@ -227,6 +210,10 @@ class GenerateData:
                 })
                 break
 
+        if cycle_pcm_buffers:
+            cycle_key = f"{machine.name}_{current_time.strftime('%Y%m%dT%H%M%S')}"
+            vibration_arrays[cycle_key] = np.concatenate(cycle_pcm_buffers)
+
         return telemetry_rows, vibration_arrays, error_rows
 
     def _save_telemetry(self, rows: list[dict], suffix: str):
@@ -235,58 +222,43 @@ class GenerateData:
         df = pd.DataFrame(rows)
         df["fault_type"] = df["fault_type"].astype("category")
         df.set_index("timestamp", inplace=True)
+        engine = cast(Literal["auto", "pyarrow", "fastparquet"], self.simulation_parameters.parquet_engine)
         df.to_parquet(
             os.path.join(self.telemetry_dir, f"telemetry-{suffix}.parquet"),
-            engine="fastparquet",
+            engine=engine,
         )
 
     def _save_vibration(self, vibration_arrays: dict[str, np.ndarray], suffix: str):
-        """
-        Saves all vibration PCM arrays for a batch as a single compressed .npz file.
-
-        Keys are "<machineID>_<ISO timestamp>" strings.
-        Loading:
-            data = np.load('vibration-...npz')
-            signal = data['M_0001_20260101T120000']
-        """
         if not vibration_arrays:
             return
         path = os.path.join(self.vibration_dir, f"vibration-{suffix}.npz")
         np.savez_compressed(path, **vibration_arrays)
 
     def _flush_errors(self, errors: list[dict], append: bool = False):
-        """
-        Writes the current error buffer to disk and clears it in-place.
-        Uses append mode (read-modify-write) when `append=True` so partial
-        runs are not lost.
-        """
         if not errors:
             return
+
+        engine = cast(Literal["auto", "pyarrow", "fastparquet"], self.simulation_parameters.parquet_engine)
+        log_path = os.path.join(self.logs_dir, "logs.parquet")
 
         new_df = pd.DataFrame(errors)
         new_df.set_index("timestamp", inplace=True)
 
-        log_path = os.path.join(self.logs_dir, "logs.parquet")
-
         if append and os.path.exists(log_path):
-            existing_df = pd.read_parquet(log_path, engine="fastparquet")
+            existing_df = pd.read_parquet(log_path, engine=engine)
             combined_df = pd.concat([existing_df, new_df])
-            combined_df.to_parquet(log_path, engine="fastparquet")
+            combined_df.to_parquet(log_path, engine=engine)
         else:
-            new_df.to_parquet(log_path, engine="fastparquet")
+            new_df.to_parquet(log_path, engine=engine)
 
         errors.clear()
 
     def generate(self):
-        """
-        Runs the full simulation and writes telemetry, vibration, and logs to disk.
-        """
         cfg = self.simulation_parameters
         machines = self.create_machines(cfg.machine_count)
         errors: list[dict] = []
 
         current_time: datetime.datetime = cfg.date_from
-
         date_interval = cfg.date_to - cfg.date_from
         max_count = date_interval // cfg.telemetry_batch_frequency
         batch_number = 0
@@ -309,11 +281,7 @@ class GenerateData:
                     offset = random.randint(0, 60 - cycle_length)
 
                     tel, vib, errs = self._process_machine_cycle(
-                        machine,
-                        current_time,
-                        cfg.date_to,  # pass simulation end for RUL horizon
-                        cycle_length,
-                        offset,
+                        machine, current_time, cfg.date_to, cycle_length, offset
                     )
                     batch_telemetry.extend(tel)
                     batch_vibration.update(vib)
@@ -330,7 +298,6 @@ class GenerateData:
                         append=(batch_number > cfg.error_flush_interval),
                     )
 
-                # FIX #5: advance local clock, not the config object
                 current_time += cfg.telemetry_batch_frequency
                 progress_bar.update(1)
 
@@ -338,7 +305,9 @@ class GenerateData:
         self._flush_errors(errors, append=os.path.exists(log_path))
 
         if os.path.exists(log_path):
-            logs_df = pd.read_parquet(log_path, engine="fastparquet")
+            logs_df = pd.read_parquet(
+                log_path, engine=cfg.parquet_engine
+            )
             failure_count = (logs_df["level"] == "CRITICAL").sum()
             print(f"{failure_count} total failure(s) recorded in logs.")
         else:
