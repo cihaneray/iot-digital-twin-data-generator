@@ -1,4 +1,5 @@
 import datetime
+import hashlib
 import math
 import os
 import random
@@ -74,20 +75,29 @@ class GenerateData:
         is_first_batch = True
 
         while current_batch < sim_end:
+            batch_end = current_batch + cfg.telemetry_batch_frequency
             if is_first_batch and initial_speed_schedule is not None:
                 speed_schedule = initial_speed_schedule
             else:
                 duration = (cycle_length if is_first_batch else expected_cycle_length) * 60
                 speed_schedule = self._generate_mission_profile(duration)
 
-            batch_offset_seconds = first_batch_offset_seconds if is_first_batch else 0
+            if is_first_batch:
+                batch_offset_seconds = first_batch_offset_seconds
+            else:
+                cycle_start = self._schedule_cycle_start(
+                    machine, current_batch, len(speed_schedule)
+                )
+                batch_offset_seconds = max(
+                    0, int((cycle_start - current_batch).total_seconds())
+                )
 
             for second, speed in enumerate(speed_schedule):
                 timestamp = current_batch + datetime.timedelta(
                     seconds=batch_offset_seconds + second
                 )
-                if timestamp >= sim_end:
-                    return None
+                if timestamp >= batch_end or timestamp >= sim_end:
+                    break
 
                 speed_value = float(speed)
                 if speed_value <= 0.1:
@@ -136,6 +146,22 @@ class GenerateData:
 
         return None
 
+    def _schedule_cycle_start(
+            self,
+            machine: RotationalMachine,
+            batch_start: datetime.datetime,
+            cycle_duration_seconds: int,
+    ) -> datetime.datetime:
+        cfg = self.simulation_parameters
+        batch_seconds = int(cfg.telemetry_batch_frequency.total_seconds())
+        max_offset = max(0, batch_seconds - cycle_duration_seconds)
+
+        key = f"{machine.name}|{int(batch_start.timestamp())}|{cfg.seed}"
+        digest = int(hashlib.md5(key.encode()).hexdigest(), 16)
+        offset_seconds = (digest % (max_offset + 1)) if max_offset > 0 else 0
+
+        return batch_start + datetime.timedelta(seconds=offset_seconds)
+
     def _handle_broken_machine(
             self, machine: RotationalMachine, current_time: datetime.datetime
     ) -> dict:
@@ -183,10 +209,11 @@ class GenerateData:
             current_time: datetime.datetime,
             sim_end: datetime.datetime,
             cycle_length: int,
-            offset: int,
+            cycle_start: datetime.datetime,
     ) -> tuple[list[dict], dict[str, np.ndarray], list[dict]]:
         duration = cycle_length * 60
         speed_schedule = self._generate_mission_profile(duration)
+        batch_end = current_time + self.simulation_parameters.telemetry_batch_frequency
 
         telemetry_rows: list[dict] = []
         vibration_arrays: dict[str, np.ndarray] = {}
@@ -201,13 +228,18 @@ class GenerateData:
             sim_end,
             cycle_length,
             initial_speed_schedule=speed_schedule,
-            first_batch_offset_seconds=offset * 60,
+            first_batch_offset_seconds=max(
+                0, int((cycle_start - current_time).total_seconds())
+            ),
         )
 
         for second in range(duration):
             machine.set_speed(float(speed_schedule[second]))
 
-            timestamp = current_time + datetime.timedelta(seconds=offset * 60 + second)
+            timestamp = cycle_start + datetime.timedelta(seconds=second)
+            if timestamp >= batch_end or timestamp >= sim_end:
+                break
+
             machine.ambient_temperature = (
                     self.get_ambient_temperature(timestamp) + random.uniform(-0.1, 0.1)
             )
@@ -335,10 +367,12 @@ class GenerateData:
                         continue
 
                     cycle_length = random.randint(cfg.cycle_length_min, cfg.cycle_length_max)
-                    offset = random.randint(0, 60 - cycle_length)
+                    cycle_start = self._schedule_cycle_start(
+                        machine, current_time, cycle_length * 60
+                    )
 
                     tel, vib, errs = self._process_machine_cycle(
-                        machine, current_time, cfg.date_to, cycle_length, offset
+                        machine, current_time, cfg.date_to, cycle_length, cycle_start
                     )
                     batch_telemetry.extend(tel)
                     batch_vibration.update(vib)
