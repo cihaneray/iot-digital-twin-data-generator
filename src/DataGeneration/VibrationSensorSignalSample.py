@@ -101,8 +101,13 @@ class VibrationSensorSignalSample:
             noise_magnitude = 0.1 + wear_severity * 2.0
             signal += self._rng.normal(0, noise_magnitude, self._N)
 
-        np.clip(signal, -self.CUTOFF, self.CUTOFF, out=signal)
-        pcm_signal = np.int16(signal / self.CUTOFF * 32767)
+        # Soft Saturation (tanh) to simulate sensor non-linearity
+        # Instead of hard clipping at CUTOFF, we use tanh to compress the signal.
+        # This prevents "square wave" artifacts while keeping the signal within bounds.
+        scaled_signal = signal / (self.CUTOFF * 0.8)  # Leave some headroom before saturation
+        saturated_signal = np.tanh(scaled_signal) * self.CUTOFF
+
+        pcm_signal = np.int16(saturated_signal / self.CUTOFF * 32767)
 
         self._last_cumsum = float(fi[-1])
 

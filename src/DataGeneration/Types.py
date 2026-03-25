@@ -28,6 +28,11 @@ class GlobalSimulationConfig:
     # Fault onset: higher = more abrupt transition (logistic curve steepness)
     fault_onset_sharpness: float = 20.0
 
+    # Physical Limits and Nominal Values
+    max_temperature: float = 120.0
+    min_pressure: float = 70.0
+    nominal_speed: float = 1000.0
+
     # Nominal operational load (%) at full speed.
     # Drives the load_factor in wear calculation: 0.5 + 0.5 * (load / 100).
     # At load_base=85%: factor ≈ 0.925.  At 0%: a factor = 0.5. At 100%: a factor = 1.0.

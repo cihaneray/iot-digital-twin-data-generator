@@ -9,9 +9,6 @@ from .VibrationSensorSignalSample import VibrationSensorSignalSample
 
 
 class RotationalMachine:
-    MAX_TEMPERATURE: float = 120.0
-    MIN_PRESSURE: float = 70.0
-
     def __init__(self, name: str, config: GlobalSimulationConfig):
         self._last_cumsum = None
         self.broken = None
@@ -80,6 +77,7 @@ class RotationalMachine:
             temperature: float,
             fault_active: bool,
             fault_type: str,
+            nominal_speed: float = 1000.0,
     ) -> float:
         if speed <= 0.1:
             return 0.0
@@ -95,7 +93,7 @@ class RotationalMachine:
 
         load_factor = 0.5 + 0.5 * (load / 100.0)
 
-        speed_factor = (speed / 1000.0) ** 2
+        speed_factor = (speed / nominal_speed) ** 2
 
         temp_factor = (
             math.exp((temperature - 80.0) / 20.0)
@@ -114,9 +112,10 @@ class RotationalMachine:
             fault_active: bool,
             fault_type: str,
             accumulated_damage: float,
+            nominal_speed: float = 1000.0,
     ) -> float:
         base_rate = RotationalMachine.compute_base_wear_rate(
-            stress_multiplier, speed, load, temperature, fault_active, fault_type
+            stress_multiplier, speed, load, temperature, fault_active, fault_type, nominal_speed
         )
         acceleration_factor = 1.0 + accumulated_damage * 0.5
         return base_rate * acceleration_factor
@@ -130,6 +129,7 @@ class RotationalMachine:
             self.fault_active,
             self.fault_type,
             self.accumulated_damage,
+            self.config.nominal_speed,
         )
 
     def _update_fault_active(self):
@@ -147,7 +147,7 @@ class RotationalMachine:
             self.fault_active = True
 
     def _update_load(self):
-        target_load = (self.speed / 1000.0) * self.config.load_base
+        target_load = (self.speed / self.config.nominal_speed) * self.config.load_base
         self.load += (target_load - self.load) * 0.1
         self.load = max(0.0, min(100.0, self.load))
 
@@ -160,20 +160,20 @@ class RotationalMachine:
                 friction_heat = 1.1
 
         health_penalty = 1.0 + 0.5 * (1.0 - self.health_index)
-        heat_generation = (self.speed / 1000.0) * 53.3 * health_penalty * friction_heat
+        heat_generation = (self.speed / self.config.nominal_speed) * 53.3 * health_penalty * friction_heat
 
         target_temp = self.ambient_temperature + heat_generation
-        thermal_rate = 0.005 + 0.01 * (self.speed / 1000.0)
+        thermal_rate = 0.005 + 0.01 * (self.speed / self.config.nominal_speed)
         self.temperature += (target_temp - self.temperature) * thermal_rate
-        self.temperature = min(self.temperature, self.MAX_TEMPERATURE)
+        self.temperature = min(self.temperature, self.config.max_temperature)
 
     def _update_pressure(self):
-        target = self.config.pressure_base * (0.8 + 0.2 * (self.speed / 1000.0))
+        target = self.config.pressure_base * (0.8 + 0.2 * (self.speed / self.config.nominal_speed))
         self.pressure += (target - self.pressure) * 0.2
-        self.pressure = max(self.MIN_PRESSURE, self.pressure)
+        self.pressure = max(self.config.min_pressure, self.pressure)
 
     def _update_voltage(self):
-        load_sag = 15.0 * (self.speed / 1000.0)
+        load_sag = 15.0 * (self.speed / self.config.nominal_speed)
 
         fault_sag = 0.0
         if self.fault_active and self.fault_type == "bearing":
@@ -197,7 +197,7 @@ class RotationalMachine:
             self.broken = True
             raise Exception(f"Mechanical Failure: {self.fault_type}")
 
-        if self.temperature >= self.MAX_TEMPERATURE:
+        if self.temperature >= self.config.max_temperature:
             self._over_temp = True
             raise Exception("Over-Temperature Failure")
 
@@ -216,7 +216,11 @@ class RotationalMachine:
         self._update_pressure()
         self._update_voltage()
 
-        modified_A = list(self.A)
+        # Dynamic Vibration Scaling (A proportional to speed squared)
+        speed_ratio = self.speed / self.config.nominal_speed
+        amplitude_scaling = speed_ratio ** 2
+        
+        modified_A = [a * amplitude_scaling for a in self.A]
         if self.fault_active and self.fault_type == "imbalance":
             modifier = 4.0 * (0.85 - h) / 0.85
             modified_A[0] *= max(1.0, 1.0 + modifier)
@@ -244,7 +248,7 @@ class RotationalMachine:
 
         reported_speed = max(0.0, self.speed + self._rng.uniform(-5.0, 5.0))
         reported_load = max(0.0, self.load + self._rng.uniform(-2.0, 2.0))
-        reported_press = max(self.MIN_PRESSURE,
+        reported_press = max(self.config.min_pressure,
                              self.pressure + self._rng.uniform(-1.5, 1.5))
 
         state = {"machineID": self.name, "speed_desired": round(self.speed_desired, 2),

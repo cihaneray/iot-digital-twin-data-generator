@@ -12,6 +12,10 @@ data/telemetry/*
 data/vibration/*
 scripts/*
 
+script/data.csv
+
 # vscode
 .vscode/
 .idea/
+
+GEMINI.md
