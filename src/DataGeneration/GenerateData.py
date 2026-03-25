@@ -60,61 +60,79 @@ class GenerateData:
             sim_start: datetime.datetime,
             sim_end: datetime.datetime,
             cycle_length: int,
+            initial_speed_schedule: np.ndarray | None = None,
+            first_batch_offset_seconds: int = 0,
     ) -> float | None:
         damage = machine.accumulated_damage
         threshold = machine.config.failure_threshold
         cfg = machine.config
 
-        prob_active = cfg.active_machines_per_batch / cfg.machine_count if cfg.machine_count else 1.0
-        expected_active_secs = prob_active * ((cfg.cycle_length_min + cfg.cycle_length_max) / 2.0) * 60.0
-        
+        expected_cycle_length = max(
+            1, int(round((cfg.cycle_length_min + cfg.cycle_length_max) / 2.0))
+        )
         current_batch = sim_start
-        first_step = True
+        is_first_batch = True
 
         while current_batch < sim_end:
-            active_secs = (cycle_length * 60 - 20) if first_step else max(0.1, expected_active_secs - 20.0 * prob_active)
-            
-            amb_temp = self.get_ambient_temperature(current_batch)
-            avg_speed = 820.0
-            
-            h = max(0.001, 1.0 - damage / threshold)
-            health_penalty = 1.0 + 0.5 * (1.0 - h)
-            
-            friction = 1.0
-            if "bearing" in machine.active_faults: friction *= 1.25
-            if "imbalance" in machine.active_faults: friction *= 1.1
-            
-            load_penalty = 1.0 + 0.2 * (avg_speed / 1000.0)
-            approx_temp = amb_temp + (avg_speed / 1000.0) * 50.0 * health_penalty * friction * load_penalty
+            if is_first_batch and initial_speed_schedule is not None:
+                speed_schedule = initial_speed_schedule
+            else:
+                duration = (cycle_length if is_first_batch else expected_cycle_length) * 60
+                speed_schedule = self._generate_mission_profile(duration)
 
-            base_rate = RotationalMachine.compute_base_wear_rate(
-                stress_multiplier=cfg.stress_multiplier,
-                speed=avg_speed,
-                load=cfg.load_base * (avg_speed / 1000.0),
-                temperature=approx_temp,
-                active_faults=machine.active_faults,
-                nominal_speed=cfg.nominal_speed,
-            )
+            batch_offset_seconds = first_batch_offset_seconds if is_first_batch else 0
 
-            if base_rate <= 0.0:
-                current_batch += cfg.telemetry_batch_frequency
-                first_step = False
-                continue
+            for second, speed in enumerate(speed_schedule):
+                timestamp = current_batch + datetime.timedelta(
+                    seconds=batch_offset_seconds + second
+                )
+                if timestamp >= sim_end:
+                    return None
 
-            t_fail_secs = (2.0 / base_rate) * math.log(
-                (threshold + 2.0) / (damage + 2.0)
-            )
+                speed_value = float(speed)
+                if speed_value <= 0.1:
+                    continue
 
-            if t_fail_secs <= active_secs:
-                return (current_batch + datetime.timedelta(seconds=t_fail_secs)).timestamp()
+                amb_temp = self.get_ambient_temperature(timestamp)
+                h = max(0.001, 1.0 - damage / threshold)
+                health_penalty = 1.0 + 0.5 * (1.0 - h)
 
-            damage = (damage + 2.0) * math.exp(0.5 * base_rate * active_secs) - 2.0
+                friction = 1.0
+                if "bearing" in machine.active_faults:
+                    friction *= 1.25
+                if "imbalance" in machine.active_faults:
+                    friction *= 1.1
 
-            if damage >= threshold:
-                return (current_batch + datetime.timedelta(seconds=active_secs)).timestamp()
+                load = cfg.load_base * (speed_value / cfg.nominal_speed)
+                load_penalty = 1.0 + 0.2 * (load / 100.0)
+                approx_temp = (
+                    amb_temp
+                    + (speed_value / cfg.nominal_speed)
+                    * 50.0
+                    * health_penalty
+                    * friction
+                    * load_penalty
+                )
+
+                wear_delta = RotationalMachine.compute_wear_step(
+                    stress_multiplier=cfg.stress_multiplier,
+                    speed=speed_value,
+                    load=load,
+                    temperature=approx_temp,
+                    active_faults=machine.active_faults,
+                    accumulated_damage=damage,
+                    nominal_speed=cfg.nominal_speed,
+                )
+
+                if wear_delta <= 0.0:
+                    continue
+
+                damage += wear_delta
+                if damage >= threshold:
+                    return timestamp.timestamp()
 
             current_batch += cfg.telemetry_batch_frequency
-            first_step = False
+            is_first_batch = False
 
         return None
 
@@ -178,7 +196,12 @@ class GenerateData:
 
         # Initial failure estimate (before fault may activate)
         failure_timestamp = self._estimate_failure_time(
-            machine, current_time, sim_end, cycle_length
+            machine,
+            current_time,
+            sim_end,
+            cycle_length,
+            initial_speed_schedule=speed_schedule,
+            first_batch_offset_seconds=offset * 60,
         )
 
         for second in range(duration):
@@ -204,7 +227,11 @@ class GenerateData:
 
                 if machine.fault_active and not pre_fault:
                     failure_timestamp = self._estimate_failure_time(
-                        machine, timestamp, sim_end, cycle_length
+                        machine,
+                        timestamp,
+                        sim_end,
+                        cycle_length,
+                        initial_speed_schedule=speed_schedule[second:],
                     )
                     if failure_timestamp is not None:
                         state["rul_seconds"] = max(
