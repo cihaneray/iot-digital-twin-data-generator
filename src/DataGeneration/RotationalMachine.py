@@ -234,13 +234,14 @@ class RotationalMachine:
 
         efficiency = max(0.1, 0.5 + 0.5 * h)
         inertia = 0.05
+        speed_before_update = self.speed
         if self.speed < self.speed_desired:
             self.speed += (self.speed_desired - self.speed) * inertia * efficiency
         else:
             self.speed += (self.speed_desired - self.speed) * inertia * 1.5
 
-        v_from = self.speed / 60.0
-        v_to = self.speed / 60.0
+        v_from = max(0.0, speed_before_update / 60.0)
+        v_to = max(0.0, self.speed / 60.0)
 
         self._update_load()
         self._update_temperature()
