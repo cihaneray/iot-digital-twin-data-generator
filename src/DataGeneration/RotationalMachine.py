@@ -354,6 +354,7 @@ class RotationalMachine:
             bearing_shock_transition_ratio=self.config.bearing_shock_transition_ratio,
             bearing_shock_load_influence=self.config.bearing_shock_load_influence,
             bearing_shock_base_magnitude=self.config.bearing_shock_base_magnitude,
+            noise_level=self.config.vibration_noise_level,
             signal_rms_limit=signal_rms_limit,
             rng=self._np_rng,
         )

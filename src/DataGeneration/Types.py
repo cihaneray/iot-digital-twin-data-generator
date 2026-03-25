@@ -74,6 +74,10 @@ class GlobalSimulationConfig:
     # Vibration sample rate (Hz). 1024 captures harmonics up to ~500 Hz.
     vibration_sample_rate: int = 1024
 
+    # Multiplicative noise level for vibration synthesis.
+    # 0.0 disables additive white noise, 1.0 keeps nominal noise profile.
+    vibration_noise_level: float = 1.0
+
     # "pyarrow" (default)
     # Switch to "fastparquet" if your environment requires it.
     parquet_engine: str = "pyarrow"
@@ -137,6 +141,9 @@ class GlobalSimulationConfig:
         )
         assert self.bearing_shock_base_magnitude > 0.0, (
             "bearing_shock_base_magnitude must be > 0."
+        )
+        assert self.vibration_noise_level >= 0.0, (
+            "vibration_noise_level must be >= 0."
         )
         assert 0.0 < self.load_base <= 100.0, "load_base must be in (0, 100]."
         assert self.parquet_engine in ("pyarrow", "fastparquet"), (

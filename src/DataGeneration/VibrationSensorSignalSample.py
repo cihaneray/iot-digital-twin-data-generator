@@ -35,6 +35,7 @@ class VibrationSensorSignalSample:
             bearing_shock_transition_ratio: float = 0.2,
             bearing_shock_load_influence: float = 0.35,
             bearing_shock_base_magnitude: float = 40.0,
+                noise_level: float = 1.0,
             signal_rms_limit: float | None = None,
             rng: np.random.Generator | None = None,
     ):
@@ -60,10 +61,10 @@ class VibrationSensorSignalSample:
         self.bearing_shock_transition_ratio = bearing_shock_transition_ratio
         self.bearing_shock_load_influence = bearing_shock_load_influence
         self.bearing_shock_base_magnitude = bearing_shock_base_magnitude
+        self.noise_level = max(0.0, noise_level)
         self.signal_rms_limit = signal_rms_limit
         self.base_frequency = fundamental_from
         self.target_base_frequency = fundamental_to
-        self.add_noise = True
         self._N = int(sample_rate * interval)
         self._rng: np.random.Generator = rng if rng is not None else np.random.default_rng()
 
@@ -185,8 +186,8 @@ class VibrationSensorSignalSample:
                 )
                 signal[idx:idx + pulse_len] += shock_pulse * shock_magnitude
 
-        if self.add_noise:
-            noise_magnitude = 0.1 + wear_severity * 2.0
+        if self.noise_level > 0.0:
+            noise_magnitude = self.noise_level * (0.1 + wear_severity * 2.0)
             signal += self._rng.normal(0, noise_magnitude, self._N)
 
         if self.signal_rms_limit is not None and self.signal_rms_limit > 0.0:
