@@ -31,7 +31,11 @@ class VibrationSensorSignalSample:
             fault_vibration_min_speed_ratio: float = 0.02,
             fault_vibration_load_influence: float = 0.5,
             fault_vibration_health_exponent: float = 1.0,
-                signal_rms_limit: float | None = None,
+            bearing_shock_min_speed_ratio: float = 0.35,
+            bearing_shock_transition_ratio: float = 0.2,
+            bearing_shock_load_influence: float = 0.35,
+            bearing_shock_base_magnitude: float = 40.0,
+            signal_rms_limit: float | None = None,
             rng: np.random.Generator | None = None,
     ):
         self._last_cumsum: float | None = None
@@ -52,6 +56,10 @@ class VibrationSensorSignalSample:
         self.fault_vibration_min_speed_ratio = fault_vibration_min_speed_ratio
         self.fault_vibration_load_influence = fault_vibration_load_influence
         self.fault_vibration_health_exponent = fault_vibration_health_exponent
+        self.bearing_shock_min_speed_ratio = bearing_shock_min_speed_ratio
+        self.bearing_shock_transition_ratio = bearing_shock_transition_ratio
+        self.bearing_shock_load_influence = bearing_shock_load_influence
+        self.bearing_shock_base_magnitude = bearing_shock_base_magnitude
         self.signal_rms_limit = signal_rms_limit
         self.base_frequency = fundamental_from
         self.target_base_frequency = fundamental_to
@@ -75,6 +83,14 @@ class VibrationSensorSignalSample:
             health_gain = wear_severity ** self.fault_vibration_health_exponent
 
         return speed_gain * load_gain * health_gain * signature_ramp
+
+    def _bearing_shock_gate(self) -> float:
+        if self.speed_ratio <= self.bearing_shock_min_speed_ratio:
+            return 0.0
+
+        transition = max(1e-6, self.bearing_shock_transition_ratio)
+        gate = (self.speed_ratio - self.bearing_shock_min_speed_ratio) / transition
+        return float(np.clip(gate, 0.0, 1.0))
 
     @property
     def last_cumsum(self) -> float:
@@ -121,16 +137,27 @@ class VibrationSensorSignalSample:
             for order, amp in zip(self.BEARING_ORDERS, self.BEARING_AMPLITUDES):
                 signal += np.sin(base * order) * amp * fault_gain
 
+        shock_gate = self._bearing_shock_gate()
         if (
                 "bearing" in self.active_faults
                 and self.health_index < 0.7
-                and np.mean(f) > 1.0
+                and shock_gate > 0.0
         ):
             impact_freq_factor = self.BEARING_ORDERS[1]  # 3.5
             impact_points = np.where(np.diff(np.floor(fi * impact_freq_factor)) > 0)[0]
             impact_points = impact_points + 1  # Correct index alignment from diff
 
-            shock_magnitude = 40.0 * fault_gain
+            load_clamped = float(np.clip(self.load_ratio, 0.0, 1.5))
+            shock_load_gain = (
+                (1.0 - self.bearing_shock_load_influence)
+                + self.bearing_shock_load_influence * load_clamped
+            )
+            shock_magnitude = (
+                self.bearing_shock_base_magnitude
+                * fault_gain
+                * shock_gate
+                * shock_load_gain
+            )
             max_pulse_len = int(self.sample_rate * 0.02)  # 20 ms ring-down max
 
             for i, idx in enumerate(impact_points):

@@ -47,6 +47,12 @@ class GlobalSimulationConfig:
     base_signal_rms_nominal: float = 28.0
     signal_rms_budget: float = 55.0
 
+    # Bearing shock controls. Shocks are gated by speed and scaled by load.
+    bearing_shock_min_speed_ratio: float = 0.35
+    bearing_shock_transition_ratio: float = 0.2
+    bearing_shock_load_influence: float = 0.35
+    bearing_shock_base_magnitude: float = 40.0
+
     # Physical Limits and Nominal Values
     max_temperature: float = 120.0
     min_pressure: float = 70.0
@@ -119,6 +125,18 @@ class GlobalSimulationConfig:
         )
         assert self.signal_rms_budget > 0.0, (
             "signal_rms_budget must be > 0."
+        )
+        assert 0.0 <= self.bearing_shock_min_speed_ratio <= 1.5, (
+            "bearing_shock_min_speed_ratio must be in [0, 1.5]."
+        )
+        assert self.bearing_shock_transition_ratio > 0.0, (
+            "bearing_shock_transition_ratio must be > 0."
+        )
+        assert 0.0 <= self.bearing_shock_load_influence <= 1.0, (
+            "bearing_shock_load_influence must be in [0, 1]."
+        )
+        assert self.bearing_shock_base_magnitude > 0.0, (
+            "bearing_shock_base_magnitude must be > 0."
         )
         assert 0.0 < self.load_base <= 100.0, "load_base must be in (0, 100]."
         assert self.parquet_engine in ("pyarrow", "fastparquet"), (

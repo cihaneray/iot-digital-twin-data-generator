@@ -350,6 +350,10 @@ class RotationalMachine:
             fault_vibration_min_speed_ratio=self.config.fault_vibration_min_speed_ratio,
             fault_vibration_load_influence=self.config.fault_vibration_load_influence,
             fault_vibration_health_exponent=self.config.fault_vibration_health_exponent,
+            bearing_shock_min_speed_ratio=self.config.bearing_shock_min_speed_ratio,
+            bearing_shock_transition_ratio=self.config.bearing_shock_transition_ratio,
+            bearing_shock_load_influence=self.config.bearing_shock_load_influence,
+            bearing_shock_base_magnitude=self.config.bearing_shock_base_magnitude,
             signal_rms_limit=signal_rms_limit,
             rng=self._np_rng,
         )
