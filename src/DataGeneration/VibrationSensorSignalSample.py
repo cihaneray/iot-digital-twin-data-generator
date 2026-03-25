@@ -23,6 +23,14 @@ class VibrationSensorSignalSample:
             prev_cumsum: float = 0.0,
             sample_rate: int = 1024,
             active_faults: set[str] | frozenset[str] = frozenset(),
+            speed_ratio: float = 0.0,
+            load_ratio: float = 0.0,
+            fault_activation_health_threshold: float = 0.85,
+            vibration_full_signature_health: float = 0.80,
+            fault_vibration_speed_exponent: float = 1.5,
+            fault_vibration_min_speed_ratio: float = 0.02,
+            fault_vibration_load_influence: float = 0.5,
+            fault_vibration_health_exponent: float = 1.0,
             rng: np.random.Generator | None = None,
     ):
         self._last_cumsum: float | None = None
@@ -35,11 +43,36 @@ class VibrationSensorSignalSample:
         self.t = t
         self.health_index = health_index
         self.active_faults = active_faults
+        self.speed_ratio = speed_ratio
+        self.load_ratio = load_ratio
+        self.fault_activation_health_threshold = fault_activation_health_threshold
+        self.vibration_full_signature_health = vibration_full_signature_health
+        self.fault_vibration_speed_exponent = fault_vibration_speed_exponent
+        self.fault_vibration_min_speed_ratio = fault_vibration_min_speed_ratio
+        self.fault_vibration_load_influence = fault_vibration_load_influence
+        self.fault_vibration_health_exponent = fault_vibration_health_exponent
         self.base_frequency = fundamental_from
         self.target_base_frequency = fundamental_to
         self.add_noise = True
         self._N = int(sample_rate * interval)
         self._rng: np.random.Generator = rng if rng is not None else np.random.default_rng()
+
+    def _fault_gain(self, wear_severity: float, signature_ramp: float) -> float:
+        speed_base = max(self.fault_vibration_min_speed_ratio, self.speed_ratio)
+        speed_gain = speed_base ** self.fault_vibration_speed_exponent
+
+        load_clamped = float(np.clip(self.load_ratio, 0.0, 1.5))
+        load_gain = (
+            (1.0 - self.fault_vibration_load_influence)
+            + self.fault_vibration_load_influence * load_clamped
+        )
+
+        if wear_severity <= 0.0:
+            health_gain = 0.0
+        else:
+            health_gain = wear_severity ** self.fault_vibration_health_exponent
+
+        return speed_gain * load_gain * health_gain * signature_ramp
 
     @property
     def last_cumsum(self) -> float:
@@ -49,7 +82,7 @@ class VibrationSensorSignalSample:
             )
         return self._last_cumsum
 
-    def pcm(self) -> np.ndarray:
+    def pcm(self) -> np.signedinteger:
         ts = np.linspace(self.t, self.t + self.interval, num=self._N, endpoint=False)
 
         x = np.array([0, self.interval]) + self.t
@@ -68,13 +101,23 @@ class VibrationSensorSignalSample:
 
         wear_severity = max(0.0, 1.0 - self.health_index)
 
-        if "imbalance" in self.active_faults and self.health_index < 0.8:
-            for order, amp in zip(self.IMBALANCE_ORDERS, self.IMBALANCE_AMPLITUDES):
-                signal += np.sin(base * order) * amp * wear_severity
+        ramp_start = self.fault_activation_health_threshold
+        ramp_end = self.vibration_full_signature_health
+        if ramp_start > ramp_end:
+            signature_ramp = (ramp_start - self.health_index) / (ramp_start - ramp_end)
+            signature_ramp = float(np.clip(signature_ramp, 0.0, 1.0))
+        else:
+            signature_ramp = 1.0
 
-        if "bearing" in self.active_faults and self.health_index < 0.8:
+        fault_gain = self._fault_gain(wear_severity, signature_ramp)
+
+        if "imbalance" in self.active_faults and self.health_index < ramp_start:
+            for order, amp in zip(self.IMBALANCE_ORDERS, self.IMBALANCE_AMPLITUDES):
+                signal += np.sin(base * order) * amp * fault_gain
+
+        if "bearing" in self.active_faults and self.health_index < ramp_start:
             for order, amp in zip(self.BEARING_ORDERS, self.BEARING_AMPLITUDES):
-                signal += np.sin(base * order) * amp * wear_severity
+                signal += np.sin(base * order) * amp * fault_gain
 
         if (
                 "bearing" in self.active_faults
@@ -85,7 +128,7 @@ class VibrationSensorSignalSample:
             impact_points = np.where(np.diff(np.floor(fi * impact_freq_factor)) > 0)[0]
             impact_points = impact_points + 1  # Correct index alignment from diff
 
-            shock_magnitude = 40.0 * wear_severity
+            shock_magnitude = 40.0 * fault_gain
             max_pulse_len = int(self.sample_rate * 0.02)  # 20 ms ring-down max
 
             for i, idx in enumerate(impact_points):

@@ -10,9 +10,9 @@ from .VibrationSensorSignalSample import VibrationSensorSignalSample
 
 class RotationalMachine:
     def __init__(self, name: str, config: GlobalSimulationConfig):
-        self._last_cumsum = None
-        self.broken = None
-        self._over_temp = None
+        self._last_cumsum = None # type: ignore
+        self.broken = None # type: ignore
+        self._over_temp = None # type: ignore
         self.speed_desired: float = 0.0
         self.name = name
         self.config = config
@@ -150,8 +150,8 @@ class RotationalMachine:
         h = self.health_index
         # Activate primary designated fault
         if self.designated_fault != "normal" and self.designated_fault not in self.active_faults:
-            if h < 0.85:
-                deficit = 0.85 - h
+            if h < self.config.fault_activation_health_threshold:
+                deficit = self.config.fault_activation_health_threshold - h
                 probability = 1.0 / (1.0 + math.exp(-self.config.fault_onset_sharpness * deficit))
                 if self._rng.random() < probability:
                     self.active_faults.add(self.designated_fault)
@@ -250,6 +250,7 @@ class RotationalMachine:
         # Dynamic Vibration Scaling (A proportional to speed squared)
         speed_ratio = self.speed / self.config.nominal_speed
         amplitude_scaling = speed_ratio ** 2
+        load_ratio = (self.load / self.config.load_base) if self.config.load_base else 0.0
         
         modified_A = [a * amplitude_scaling for a in self.A]
         if "imbalance" in self.active_faults:
@@ -266,6 +267,14 @@ class RotationalMachine:
             t=self.t,
             prev_cumsum=self._last_cumsum,
             sample_rate=self.config.vibration_sample_rate,
+            speed_ratio=speed_ratio,
+            load_ratio=load_ratio,
+            fault_activation_health_threshold=self.config.fault_activation_health_threshold,
+            vibration_full_signature_health=self.config.vibration_full_signature_health,
+            fault_vibration_speed_exponent=self.config.fault_vibration_speed_exponent,
+            fault_vibration_min_speed_ratio=self.config.fault_vibration_min_speed_ratio,
+            fault_vibration_load_influence=self.config.fault_vibration_load_influence,
+            fault_vibration_health_exponent=self.config.fault_vibration_health_exponent,
             rng=self._np_rng,
         )
 

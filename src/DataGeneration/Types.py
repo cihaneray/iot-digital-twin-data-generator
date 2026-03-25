@@ -28,6 +28,19 @@ class GlobalSimulationConfig:
     # Fault onset: higher = more abrupt transition (logistic curve steepness)
     fault_onset_sharpness: float = 20.0
 
+    # Health threshold where a designated fault is allowed to become active.
+    fault_activation_health_threshold: float = 0.85
+
+    # Health threshold where fault vibration signature reaches full strength.
+    # Between activation threshold and this value, amplitudes are ramped gradually.
+    vibration_full_signature_health: float = 0.80
+
+    # Fault vibration gain controls. Fault signatures scale with speed, load, and health.
+    fault_vibration_speed_exponent: float = 1.5
+    fault_vibration_min_speed_ratio: float = 0.02
+    fault_vibration_load_influence: float = 0.5
+    fault_vibration_health_exponent: float = 1.0
+
     # Physical Limits and Nominal Values
     max_temperature: float = 120.0
     min_pressure: float = 70.0
@@ -73,6 +86,21 @@ class GlobalSimulationConfig:
         )
         assert (self.imbalance_probability + self.bearing_fault_probability) <= 1.0, (
             "imbalance_probability + bearing_fault_probability must not exceed 1.0."
+        )
+        assert 0.0 <= self.vibration_full_signature_health < self.fault_activation_health_threshold <= 1.0, (
+            "vibration_full_signature_health must be < fault_activation_health_threshold, both in [0, 1]."
+        )
+        assert self.fault_vibration_speed_exponent > 0.0, (
+            "fault_vibration_speed_exponent must be > 0."
+        )
+        assert 0.0 <= self.fault_vibration_min_speed_ratio <= 1.0, (
+            "fault_vibration_min_speed_ratio must be in [0, 1]."
+        )
+        assert 0.0 <= self.fault_vibration_load_influence <= 1.0, (
+            "fault_vibration_load_influence must be in [0, 1]."
+        )
+        assert self.fault_vibration_health_exponent > 0.0, (
+            "fault_vibration_health_exponent must be > 0."
         )
         assert 0.0 < self.load_base <= 100.0, "load_base must be in (0, 100]."
         assert self.parquet_engine in ("pyarrow", "fastparquet"), (
