@@ -41,23 +41,42 @@ class RotationalMachine:
         self.voltage: float = self._voltage_base
         self.accumulated_damage: float = 0.0
         self.broken: bool = False
-        self.fault_active: bool = False
         self._over_temp: bool = False
 
-        self.fault_type: str = self._assign_fault_type()
+        self.designated_fault: str = self._assign_fault_type()
+        self.active_faults: set[str] = set()
+        self._imbalance_cascade_rolled: bool = False
 
         self._last_cumsum: float = 0.0
 
+    @property
+    def fault_active(self) -> bool:
+        return len(self.active_faults) > 0
+
+    @property
+    def fault_type(self) -> str:
+        if not self.active_faults:
+            return "normal"
+        return "+".join(sorted(self.active_faults))
+
     def _assign_fault_type(self) -> str:
-        normal_probability = (
-                1.0
-                - self.config.imbalance_probability
-                - self.config.bearing_fault_probability
-        )
+        # Ensure probabilities sum to 1 for exclusive fault assignment
+        total_fault_prob = self.config.imbalance_probability + self.config.bearing_fault_probability
+        if total_fault_prob > 1.0:
+            # Normalize if sum exceeds 1, or handle as an error/warning
+            # For now, we'll just cap it and distribute the remainder to normal
+            imbalance_prob = self.config.imbalance_probability / total_fault_prob
+            bearing_prob = self.config.bearing_fault_probability / total_fault_prob
+            normal_probability = 0.0
+        else:
+            imbalance_prob = self.config.imbalance_probability
+            bearing_prob = self.config.bearing_fault_probability
+            normal_probability = 1.0 - total_fault_prob
+
         fault_types = ["imbalance", "bearing", "normal"]
         weights = [
-            self.config.imbalance_probability,
-            self.config.bearing_fault_probability,
+            imbalance_prob,
+            bearing_prob,
             normal_probability,
         ]
         return self._rng.choices(fault_types, weights=weights, k=1)[0]
@@ -75,8 +94,7 @@ class RotationalMachine:
             speed: float,
             load: float,
             temperature: float,
-            fault_active: bool,
-            fault_type: str,
+            active_faults: set[str],
             nominal_speed: float = 1000.0,
     ) -> float:
         if speed <= 0.1:
@@ -85,14 +103,12 @@ class RotationalMachine:
         base_wear = 0.001 * stress_multiplier
 
         fault_multiplier = 1.0
-        if fault_active:
-            if fault_type == "bearing":
-                fault_multiplier = 1.2
-            elif fault_type == "imbalance":
-                fault_multiplier = 1.1
+        if "bearing" in active_faults:
+            fault_multiplier *= 1.2
+        if "imbalance" in active_faults:
+            fault_multiplier *= 1.1
 
         load_factor = 0.5 + 0.5 * (load / 100.0)
-
         speed_factor = (speed / nominal_speed) ** 2
 
         temp_factor = (
@@ -109,13 +125,12 @@ class RotationalMachine:
             speed: float,
             load: float,
             temperature: float,
-            fault_active: bool,
-            fault_type: str,
+            active_faults: set[str],
             accumulated_damage: float,
             nominal_speed: float = 1000.0,
     ) -> float:
         base_rate = RotationalMachine.compute_base_wear_rate(
-            stress_multiplier, speed, load, temperature, fault_active, fault_type, nominal_speed
+            stress_multiplier, speed, load, temperature, active_faults, nominal_speed
         )
         acceleration_factor = 1.0 + accumulated_damage * 0.5
         return base_rate * acceleration_factor
@@ -126,58 +141,74 @@ class RotationalMachine:
             self.speed,
             self.load,
             self.temperature,
-            self.fault_active,
-            self.fault_type,
+            self.active_faults,
             self.accumulated_damage,
             self.config.nominal_speed,
         )
 
     def _update_fault_active(self):
-        if self.fault_active or self.fault_type == "normal":
-            return
-
         h = self.health_index
-        if h >= 0.85:
-            return
+        # Activate primary designated fault
+        if self.designated_fault != "normal" and self.designated_fault not in self.active_faults:
+            if h < 0.85:
+                deficit = 0.85 - h
+                probability = 1.0 / (1.0 + math.exp(-self.config.fault_onset_sharpness * deficit))
+                if self._rng.random() < probability:
+                    self.active_faults.add(self.designated_fault)
 
-        deficit = 0.85 - h
-        probability = 1.0 / (1.0 + math.exp(-self.config.fault_onset_sharpness * deficit))
-
-        if self._rng.random() < probability:
-            self.fault_active = True
-
-    def _update_load(self):
-        target_load = (self.speed / self.config.nominal_speed) * self.config.load_base
-        self.load += (target_load - self.load) * 0.1
-        self.load = max(0.0, min(100.0, self.load))
+        # Cascade faults: Severe bearing wear has a 30% chance to induce an imbalance
+        if "bearing" in self.active_faults and "imbalance" not in self.active_faults:
+            if h < 0.5 and not self._imbalance_cascade_rolled:
+                self._imbalance_cascade_rolled = True
+                if self._rng.random() < 0.30:
+                    self.active_faults.add("imbalance")
 
     def _update_temperature(self):
         friction_heat = 1.0
-        if self.fault_active:
-            if self.fault_type == "bearing":
-                friction_heat = 1.25
-            elif self.fault_type == "imbalance":
-                friction_heat = 1.1
+        if "bearing" in self.active_faults:
+            friction_heat *= 1.25
+        if "imbalance" in self.active_faults:
+            friction_heat *= 1.1
+
+        # High load increases temperature slightly
+        load_penalty = 1.0 + 0.2 * (self.load / 100.0)
 
         health_penalty = 1.0 + 0.5 * (1.0 - self.health_index)
-        heat_generation = (self.speed / self.config.nominal_speed) * 53.3 * health_penalty * friction_heat
+        heat_generation = (self.speed / self.config.nominal_speed) * 50.0 * health_penalty * friction_heat * load_penalty
 
         target_temp = self.ambient_temperature + heat_generation
         thermal_rate = 0.005 + 0.01 * (self.speed / self.config.nominal_speed)
         self.temperature += (target_temp - self.temperature) * thermal_rate
         self.temperature = min(self.temperature, self.config.max_temperature)
 
+    def _update_load(self):
+        base_target_load = (self.speed / self.config.nominal_speed) * self.config.load_base
+        
+        # High temperature reduces viscosity, increasing friction and thus motor load
+        temp_penalty = 1.0
+        if self.temperature > 80.0:
+            temp_penalty += 0.05 * ((self.temperature - 80.0) / 10.0)
+            
+        health_penalty = 1.0 + 0.2 * (1.0 - self.health_index)
+        target_load = base_target_load * temp_penalty * health_penalty
+
+        self.load += (target_load - self.load) * 0.1
+        self.load = max(0.0, min(100.0, self.load))
+        
     def _update_pressure(self):
         target = self.config.pressure_base * (0.8 + 0.2 * (self.speed / self.config.nominal_speed))
         self.pressure += (target - self.pressure) * 0.2
         self.pressure = max(self.config.min_pressure, self.pressure)
 
     def _update_voltage(self):
-        load_sag = 15.0 * (self.speed / self.config.nominal_speed)
+        # Load directly affects voltage sag
+        load_sag = 15.0 * (self.load / self.config.load_base) if self.config.load_base else 0.0
 
         fault_sag = 0.0
-        if self.fault_active and self.fault_type == "bearing":
-            fault_sag = 25.0 * (1.0 - self.health_index)
+        if "bearing" in self.active_faults:
+             fault_sag += 25.0 * (1.0 - self.health_index)
+        if "imbalance" in self.active_faults:
+             fault_sag += 10.0 * (1.0 - self.health_index)
 
         noise = self._rng.uniform(-2.0, 2.0)
         self.voltage = self._voltage_base - load_sag - fault_sag + noise
@@ -221,7 +252,7 @@ class RotationalMachine:
         amplitude_scaling = speed_ratio ** 2
         
         modified_A = [a * amplitude_scaling for a in self.A]
-        if self.fault_active and self.fault_type == "imbalance":
+        if "imbalance" in self.active_faults:
             modifier = 4.0 * (0.85 - h) / 0.85
             modified_A[0] *= max(1.0, 1.0 + modifier)
 
@@ -231,7 +262,7 @@ class RotationalMachine:
             fundamental_from=v_from,
             fundamental_to=v_to,
             health_index=h,
-            fault_type=self.fault_type,
+            active_faults=frozenset(self.active_faults),
             t=self.t,
             prev_cumsum=self._last_cumsum,
             sample_rate=self.config.vibration_sample_rate,

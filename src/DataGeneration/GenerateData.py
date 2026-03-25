@@ -54,8 +54,8 @@ class GenerateData:
                 + self.simulation_parameters.ambient_temp_amplitude * cycle_variation
         )
 
-    @staticmethod
     def _estimate_failure_time(
+            self,
             machine: RotationalMachine,
             sim_start: datetime.datetime,
             sim_end: datetime.datetime,
@@ -65,34 +65,40 @@ class GenerateData:
         threshold = machine.config.failure_threshold
         cfg = machine.config
 
-        active_secs = max(1, cycle_length * 60 - 20)
-        batch_freq = cfg.telemetry_batch_frequency
-
+        prob_active = cfg.active_machines_per_batch / cfg.machine_count if cfg.machine_count else 1.0
+        expected_active_secs = prob_active * ((cfg.cycle_length_min + cfg.cycle_length_max) / 2.0) * 60.0
+        
         current_batch = sim_start
+        first_step = True
 
         while current_batch < sim_end:
+            active_secs = (cycle_length * 60 - 20) if first_step else max(0.1, expected_active_secs - 20.0 * prob_active)
+            
+            amb_temp = self.get_ambient_temperature(current_batch)
+            avg_speed = 820.0
+            
             h = max(0.001, 1.0 - damage / threshold)
             health_penalty = 1.0 + 0.5 * (1.0 - h)
-            friction = (
-                1.25 if (machine.fault_active and machine.fault_type == "bearing")
-                else 1.0
-            )
-            approx_temp = (
-                    machine.ambient_temperature
-                    + 53.3 * health_penalty * friction
-            )
+            
+            friction = 1.0
+            if "bearing" in machine.active_faults: friction *= 1.25
+            if "imbalance" in machine.active_faults: friction *= 1.1
+            
+            load_penalty = 1.0 + 0.2 * (avg_speed / 1000.0)
+            approx_temp = amb_temp + (avg_speed / 1000.0) * 50.0 * health_penalty * friction * load_penalty
 
             base_rate = RotationalMachine.compute_base_wear_rate(
                 stress_multiplier=cfg.stress_multiplier,
-                speed=1000.0,
-                load=cfg.load_base,
+                speed=avg_speed,
+                load=cfg.load_base * (avg_speed / 1000.0),
                 temperature=approx_temp,
-                fault_active=machine.fault_active,
-                fault_type=machine.fault_type,
+                active_faults=machine.active_faults,
+                nominal_speed=cfg.nominal_speed,
             )
 
             if base_rate <= 0.0:
-                current_batch += batch_freq
+                current_batch += cfg.telemetry_batch_frequency
+                first_step = False
                 continue
 
             t_fail_secs = (2.0 / base_rate) * math.log(
@@ -100,18 +106,15 @@ class GenerateData:
             )
 
             if t_fail_secs <= active_secs:
-                return (
-                        current_batch + datetime.timedelta(seconds=t_fail_secs)
-                ).timestamp()
+                return (current_batch + datetime.timedelta(seconds=t_fail_secs)).timestamp()
 
             damage = (damage + 2.0) * math.exp(0.5 * base_rate * active_secs) - 2.0
 
             if damage >= threshold:
-                return (
-                        current_batch + datetime.timedelta(seconds=active_secs)
-                ).timestamp()
+                return (current_batch + datetime.timedelta(seconds=active_secs)).timestamp()
 
-            current_batch += batch_freq
+            current_batch += cfg.telemetry_batch_frequency
+            first_step = False
 
         return None
 
@@ -127,6 +130,35 @@ class GenerateData:
             "code": "fixed",
         }
 
+    def _generate_mission_profile(self, duration_seconds: int) -> np.ndarray:
+        if duration_seconds <= 60:
+            schedule = np.full(duration_seconds, 1000.0)
+            schedule[-20:] = 0.0
+            return schedule
+
+        schedule = np.zeros(duration_seconds)
+        remaining = duration_seconds - 20
+        idx = 0
+        
+        warmup = min(120, remaining)
+        schedule[idx : idx + warmup] = 500.0
+        idx += warmup
+        remaining -= warmup
+        
+        speeds = [400.0, 800.0, 1000.0, 1200.0]
+        weights = [0.2, 0.4, 0.3, 0.1]
+        
+        while remaining > 0:
+            phase_len = random.randint(300, 1800)
+            phase_len = min(phase_len, remaining)
+            spd = random.choices(speeds, weights=weights, k=1)[0]
+            schedule[idx : idx + phase_len] = spd
+            idx += phase_len
+            remaining -= phase_len
+            
+        schedule[-20:] = 0.0
+        return schedule
+
     def _process_machine_cycle(
             self,
             machine: RotationalMachine,
@@ -135,9 +167,8 @@ class GenerateData:
             cycle_length: int,
             offset: int,
     ) -> tuple[list[dict], dict[str, np.ndarray], list[dict]]:
-        machine.set_speed(1000)
         duration = cycle_length * 60
-        cooldown_point = duration - 20
+        speed_schedule = self._generate_mission_profile(duration)
 
         telemetry_rows: list[dict] = []
         vibration_arrays: dict[str, np.ndarray] = {}
@@ -151,8 +182,7 @@ class GenerateData:
         )
 
         for second in range(duration):
-            if second == cooldown_point:
-                machine.set_speed(0)
+            machine.set_speed(float(speed_schedule[second]))
 
             timestamp = current_time + datetime.timedelta(seconds=offset * 60 + second)
             machine.ambient_temperature = (
@@ -198,7 +228,7 @@ class GenerateData:
                 state["timestamp"] = timestamp
                 telemetry_rows.append(state)
 
-                if not state["speed"] and second >= cooldown_point:
+                if state["speed"] < 1.0 and second >= duration - 20:
                     break
 
             except Exception as exc:

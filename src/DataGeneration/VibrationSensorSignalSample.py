@@ -22,7 +22,7 @@ class VibrationSensorSignalSample:
             interval: float = 1.0,
             prev_cumsum: float = 0.0,
             sample_rate: int = 1024,
-            fault_type: str = "normal",
+            active_faults: set[str] | frozenset[str] = frozenset(),
             rng: np.random.Generator | None = None,
     ):
         self._last_cumsum: float | None = None
@@ -34,7 +34,7 @@ class VibrationSensorSignalSample:
         self.A = a
         self.t = t
         self.health_index = health_index
-        self.fault_type = fault_type
+        self.active_faults = active_faults
         self.base_frequency = fundamental_from
         self.target_base_frequency = fundamental_to
         self.add_noise = True
@@ -68,34 +68,50 @@ class VibrationSensorSignalSample:
 
         wear_severity = max(0.0, 1.0 - self.health_index)
 
-        if self.fault_type == "imbalance" and self.health_index < 0.8:
+        if "imbalance" in self.active_faults and self.health_index < 0.8:
             for order, amp in zip(self.IMBALANCE_ORDERS, self.IMBALANCE_AMPLITUDES):
                 signal += np.sin(base * order) * amp * wear_severity
 
-        if self.fault_type == "bearing" and self.health_index < 0.8:
+        if "bearing" in self.active_faults and self.health_index < 0.8:
             for order, amp in zip(self.BEARING_ORDERS, self.BEARING_AMPLITUDES):
                 signal += np.sin(base * order) * amp * wear_severity
 
         if (
-                self.fault_type == "bearing"
+                "bearing" in self.active_faults
                 and self.health_index < 0.7
                 and np.mean(f) > 1.0
         ):
             impact_freq_factor = self.BEARING_ORDERS[1]  # 3.5
             impact_points = np.where(np.diff(np.floor(fi * impact_freq_factor)) > 0)[0]
+            impact_points = impact_points + 1  # Correct index alignment from diff
 
-            pulse_len = int(self.sample_rate * 0.02)  # 20 ms ring-down
             shock_magnitude = 40.0 * wear_severity
+            max_pulse_len = int(self.sample_rate * 0.02)  # 20 ms ring-down max
 
-            for idx in impact_points:
-                end = idx + pulse_len
-                if end < self._N:
-                    time_window = np.linspace(0, 0.02, pulse_len)
-                    shock_pulse = (
-                            np.sin(2 * np.pi * 200 * time_window)
-                            * np.exp(-200 * time_window)
-                    )
-                    signal[idx:end] += shock_pulse * shock_magnitude
+            for i, idx in enumerate(impact_points):
+                if idx >= self._N:
+                    continue
+
+                # Determine when the current pulse must yield to the next
+                if i < len(impact_points) - 1:
+                    next_idx = impact_points[i + 1]
+                    pulse_len = min(max_pulse_len, next_idx - idx)
+                else:
+                    pulse_len = max_pulse_len
+
+                # Avoid overflowing the signal array
+                pulse_len = min(pulse_len, self._N - idx)
+                
+                if pulse_len <= 0:
+                    continue
+
+                actual_duration = pulse_len / self.sample_rate
+                time_window = np.linspace(0, actual_duration, pulse_len, endpoint=False)
+                shock_pulse = (
+                        np.sin(2 * np.pi * 200 * time_window)
+                        * np.exp(-200 * time_window)
+                )
+                signal[idx:idx + pulse_len] += shock_pulse * shock_magnitude
 
         if self.add_noise:
             noise_magnitude = 0.1 + wear_severity * 2.0
