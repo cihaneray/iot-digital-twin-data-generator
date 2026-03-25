@@ -41,6 +41,12 @@ class GlobalSimulationConfig:
     fault_vibration_load_influence: float = 0.5
     fault_vibration_health_exponent: float = 1.0
 
+    # Harmonic spectrum controls for operating-point-dependent baseline vibration.
+    harmonic_rolloff_exponent: float = 1.6
+    harmonic_resonance_strength: float = 0.25
+    base_signal_rms_nominal: float = 28.0
+    signal_rms_budget: float = 55.0
+
     # Physical Limits and Nominal Values
     max_temperature: float = 120.0
     min_pressure: float = 70.0
@@ -101,6 +107,18 @@ class GlobalSimulationConfig:
         )
         assert self.fault_vibration_health_exponent > 0.0, (
             "fault_vibration_health_exponent must be > 0."
+        )
+        assert self.harmonic_rolloff_exponent > 0.0, (
+            "harmonic_rolloff_exponent must be > 0."
+        )
+        assert 0.0 <= self.harmonic_resonance_strength <= 1.0, (
+            "harmonic_resonance_strength must be in [0, 1]."
+        )
+        assert self.base_signal_rms_nominal > 0.0, (
+            "base_signal_rms_nominal must be > 0."
+        )
+        assert self.signal_rms_budget > 0.0, (
+            "signal_rms_budget must be > 0."
         )
         assert 0.0 < self.load_base <= 100.0, "load_base must be in (0, 100]."
         assert self.parquet_engine in ("pyarrow", "fastparquet"), (

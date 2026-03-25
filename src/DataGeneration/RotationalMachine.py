@@ -88,6 +88,73 @@ class RotationalMachine:
     def set_speed(self, speed: float):
         self.speed_desired = speed
 
+    def _harmonic_profile_weights(self) -> list[float]:
+        p = self.config.harmonic_rolloff_exponent
+        r = self.config.harmonic_resonance_strength
+
+        weights: list[float] = []
+        for order in self.W:
+            order_mag = max(1.0, float(order))
+            rolloff = 1.0 / (order_mag ** p)
+
+            # Mild resonances around 1x and 2x keep the baseline realistic.
+            resonance = 1.0
+            resonance += r * math.exp(-((float(order) - 1.0) ** 2) / 0.20)
+            resonance += 0.5 * r * math.exp(-((float(order) - 2.0) ** 2) / 0.45)
+            weights.append(rolloff * resonance)
+
+        return weights
+
+    def _compute_operating_spectrum(
+            self, speed_ratio: float, load_ratio: float, health_index: float
+    ) -> list[float]:
+        sr = float(np.clip(speed_ratio, 0.0, 1.5))
+        lr = float(np.clip(load_ratio, 0.0, 1.5))
+        wear = max(0.0, 1.0 - health_index)
+
+        target_rms = self.config.base_signal_rms_nominal
+        target_rms *= max(0.02, sr) ** 1.05
+        target_rms *= 0.70 + 0.30 * min(lr, 1.0)
+        target_rms *= 0.95 + 0.15 * wear
+
+        weights = self._harmonic_profile_weights()
+        norm = math.sqrt(sum(w * w for w in weights)) or 1.0
+        amplitude_scale = (target_rms * math.sqrt(2.0)) / norm
+
+        return [w * amplitude_scale for w in weights]
+
+    def _apply_fault_band_boosts(
+            self, amplitudes: list[float], health_index: float
+    ) -> list[float]:
+        boosted = list(amplitudes)
+        wear = max(0.0, 1.0 - health_index)
+
+        for i, order in enumerate(self.W):
+            factor = 1.0
+            if "imbalance" in self.active_faults:
+                if abs(float(order) - 1.0) < 0.35:
+                    factor *= 1.0 + 1.2 * wear
+                elif abs(float(order) - 2.0) < 0.45:
+                    factor *= 1.0 + 0.8 * wear
+
+            if "bearing" in self.active_faults:
+                if abs(float(order) - 3.0) < 0.55:
+                    factor *= 1.0 + 0.5 * wear
+                elif abs(float(order) - 5.0) < 0.85:
+                    factor *= 1.0 + 0.9 * wear
+                elif abs(float(order) - 7.0) < 1.0:
+                    factor *= 1.0 + 0.6 * wear
+
+            boosted[i] *= factor
+
+        return boosted
+
+    @staticmethod
+    def _rms_from_harmonic_amplitudes(amplitudes: list[float]) -> float:
+        if not amplitudes:
+            return 0.0
+        return math.sqrt(sum(a * a for a in amplitudes) / 2.0)
+
     @staticmethod
     def compute_base_wear_rate(
             stress_multiplier: float,
@@ -248,15 +315,22 @@ class RotationalMachine:
         self._update_pressure()
         self._update_voltage()
 
-        # Dynamic Vibration Scaling (A proportional to speed squared)
         speed_ratio = self.speed / self.config.nominal_speed
-        amplitude_scaling = speed_ratio ** 2
         load_ratio = (self.load / self.config.load_base) if self.config.load_base else 0.0
-        
-        modified_A = [a * amplitude_scaling for a in self.A]
-        if "imbalance" in self.active_faults:
-            modifier = 4.0 * (0.85 - h) / 0.85
-            modified_A[0] *= max(1.0, 1.0 + modifier)
+
+        modified_A = self._compute_operating_spectrum(speed_ratio, load_ratio, h)
+        modified_A = self._apply_fault_band_boosts(modified_A, h)
+
+        harmonic_rms = self._rms_from_harmonic_amplitudes(modified_A)
+        if harmonic_rms > self.config.signal_rms_budget:
+            scale = self.config.signal_rms_budget / harmonic_rms
+            modified_A = [a * scale for a in modified_A]
+
+        signal_rms_limit = self.config.signal_rms_budget
+        signal_rms_limit *= max(0.02, speed_ratio) ** 1.05
+        signal_rms_limit *= 0.70 + 0.30 * min(load_ratio, 1.0)
+        if self.fault_active:
+            signal_rms_limit *= 1.2
 
         sample = VibrationSensorSignalSample(
             w=self.W,
@@ -276,6 +350,7 @@ class RotationalMachine:
             fault_vibration_min_speed_ratio=self.config.fault_vibration_min_speed_ratio,
             fault_vibration_load_influence=self.config.fault_vibration_load_influence,
             fault_vibration_health_exponent=self.config.fault_vibration_health_exponent,
+            signal_rms_limit=signal_rms_limit,
             rng=self._np_rng,
         )
 

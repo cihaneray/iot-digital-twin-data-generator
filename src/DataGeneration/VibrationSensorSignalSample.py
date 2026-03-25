@@ -31,6 +31,7 @@ class VibrationSensorSignalSample:
             fault_vibration_min_speed_ratio: float = 0.02,
             fault_vibration_load_influence: float = 0.5,
             fault_vibration_health_exponent: float = 1.0,
+                signal_rms_limit: float | None = None,
             rng: np.random.Generator | None = None,
     ):
         self._last_cumsum: float | None = None
@@ -51,6 +52,7 @@ class VibrationSensorSignalSample:
         self.fault_vibration_min_speed_ratio = fault_vibration_min_speed_ratio
         self.fault_vibration_load_influence = fault_vibration_load_influence
         self.fault_vibration_health_exponent = fault_vibration_health_exponent
+        self.signal_rms_limit = signal_rms_limit
         self.base_frequency = fundamental_from
         self.target_base_frequency = fundamental_to
         self.add_noise = True
@@ -159,6 +161,11 @@ class VibrationSensorSignalSample:
         if self.add_noise:
             noise_magnitude = 0.1 + wear_severity * 2.0
             signal += self._rng.normal(0, noise_magnitude, self._N)
+
+        if self.signal_rms_limit is not None and self.signal_rms_limit > 0.0:
+            current_rms = float(np.sqrt(np.mean(signal ** 2)))
+            if current_rms > self.signal_rms_limit:
+                signal *= self.signal_rms_limit / current_rms
 
         # Soft Saturation (tanh) to simulate sensor non-linearity
         # Instead of hard clipping at CUTOFF, we use tanh to compress the signal.
