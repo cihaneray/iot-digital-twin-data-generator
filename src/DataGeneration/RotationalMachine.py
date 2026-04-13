@@ -215,7 +215,7 @@ class RotationalMachine:
 
     def _update_fault_active(self):
         h = self.health_index
-        # Activate primary designated fault
+        # Activate primary-designated fault
         if self.designated_fault != "normal" and self.designated_fault not in self.active_faults:
             if h < self.config.fault_activation_health_threshold:
                 deficit = self.config.fault_activation_health_threshold - h

@@ -31,8 +31,8 @@ class GlobalSimulationConfig:
     # Health threshold where a designated fault is allowed to become active.
     fault_activation_health_threshold: float = 0.85
 
-    # Health threshold where fault vibration signature reaches full strength.
-    # Between activation threshold and this value, amplitudes are ramped gradually.
+    # Health threshold where the fault vibration signature reaches full strength.
+    # Between the activation threshold and this value, amplitudes are ramped gradually.
     vibration_full_signature_health: float = 0.80
 
     # Fault vibration gain controls. Fault signatures scale with speed, load, and health.
@@ -75,7 +75,7 @@ class GlobalSimulationConfig:
     vibration_sample_rate: int = 1024
 
     # Multiplicative noise level for vibration synthesis.
-    # 0.0 disables additive white noise, 1.0 keeps nominal noise profile.
+    # 0.0 disables additive white noise, 1.0 keeps a nominal noise profile.
     vibration_noise_level: float = 1.0
 
     # "pyarrow" (default)

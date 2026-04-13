@@ -33,4 +33,5 @@ config = GlobalSimulationConfig(
 )
 
 generate = GenerateData(config, "data")
-generate.generate()
+# generate.generate()
+generate.combine_telemetry_to_single_parquet()

@@ -8,11 +8,22 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Data
 data/telemetry/*
 data/vibration/*
-scripts/*
+data/logs/*
 
+scripts/*
 script/data.csv
+
+uv.lock
+
+ai.ignore.md
+AI_PROJE_OZETI.md
+Makale_Gorselleri.md
+.cursorignore
+.aiderignore
 
 # vscode
 .vscode/

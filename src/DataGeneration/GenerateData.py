@@ -3,6 +3,7 @@ import hashlib
 import math
 import os
 import random
+import glob
 
 import numpy as np
 import pandas as pd
@@ -403,3 +404,34 @@ class GenerateData:
             print(f"{failure_count} total failure(s) recorded in logs.")
         else:
             print("No events logged.")
+
+    def combine_telemetry_to_single_parquet(self, output_filename: str = "telemetry_all.parquet") -> str:
+        """
+        Combines all batch telemetry parquet files into a single parquet file.
+        Useful for getting all data in one file at any time.
+        
+        Returns:
+            The path to the combined parquet file, or empty string if no files were found.
+        """
+        search_pattern = os.path.join(self.telemetry_dir, "telemetry-*.parquet")
+        files = glob.glob(search_pattern)
+        
+        if not files:
+            print("No telemetry files found to combine.")
+            return ""
+
+        engine = cast(Literal["auto", "pyarrow", "fastparquet"], self.simulation_parameters.parquet_engine)
+        df_list = []
+        for file in files:
+            try:
+                df_list.append(pd.read_parquet(file, engine=engine))
+            except Exception as e:
+                print(f"Error reading {file}: {e}")
+        
+        if df_list:
+            combined_df = pd.concat(df_list)
+            output_path = os.path.join(self.data_dir, output_filename)
+            combined_df.to_parquet(output_path, engine=engine)
+            print(f"Combined telemetry data saved to {output_path}")
+            return output_path
+        return ""
