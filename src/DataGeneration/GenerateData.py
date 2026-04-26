@@ -322,7 +322,7 @@ class GenerateData:
         if not vibration_arrays:
             return
         path = os.path.join(self.vibration_dir, f"vibration-{suffix}.npz")
-        np.savez_compressed(path, **vibration_arrays)
+        np.savez_compressed(path, **vibration_arrays) # type: ignore
 
     def _flush_errors(self, errors: list[dict], append: bool = False):
         if not errors:
@@ -335,7 +335,7 @@ class GenerateData:
         new_df.set_index("timestamp", inplace=True)
 
         if append and os.path.exists(log_path):
-            existing_df = pd.read_parquet(log_path, engine=engine)
+            existing_df = pd.read_parquet(log_path, engine=engine) # type: ignore
             combined_df = pd.concat([existing_df, new_df])
             combined_df.to_parquet(log_path, engine=engine)
         else:
@@ -398,7 +398,7 @@ class GenerateData:
 
         if os.path.exists(log_path):
             logs_df = pd.read_parquet(
-                log_path, engine=cfg.parquet_engine
+                log_path, engine=cfg.parquet_engine # type: ignore
             )
             failure_count = (logs_df["level"] == "CRITICAL").sum()
             print(f"{failure_count} total failure(s) recorded in logs.")
@@ -424,7 +424,7 @@ class GenerateData:
         df_list = []
         for file in files:
             try:
-                df_list.append(pd.read_parquet(file, engine=engine))
+                df_list.append(pd.read_parquet(file, engine=engine)) # type: ignore
             except Exception as e:
                 print(f"Error reading {file}: {e}")
         
