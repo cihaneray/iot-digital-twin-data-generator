@@ -1,0 +1,18 @@
+{
+    "seed":42,
+    "date_from": "2026-01-01T00:00:00",
+    "date_to": "2027-10-01T00:00:00",
+    "telemetry_batch_frequency_seconds":3600,
+    "machine_count":10,
+    "active_machines_per_batch":10,
+    "cycle_length_min":1,
+    "cycle_length_max":5,
+    "stress_multiplier":0.25,
+    "failure_threshold":5.0,
+    "ambient_temp_mean":22.0,
+    "ambient_temp_amplitude":8.0,
+    "imbalance_probability":0.10,
+    "bearing_fault_probability":0.10,
+    "fault_onset_sharpness":20.0,
+    "error_flush_interval":50
+}

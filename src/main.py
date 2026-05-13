@@ -32,6 +32,12 @@ config = GlobalSimulationConfig(
     error_flush_interval=50,
 )
 
-generate = GenerateData(config, "data")
-generate.generate()
-generate.combine_telemetry_to_single_parquet()
+
+def main() -> None:
+    generate = GenerateData(config, "data")
+    # generate.generate()
+    generate.combine_telemetry_to_single_parquet()
+
+
+if __name__ == "__main__":
+    main()

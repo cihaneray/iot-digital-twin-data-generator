@@ -87,3 +87,24 @@ where
 
 - $d$ is the initial degradation
 - $a$ and $b$ are the coefficients defining the trajectory of health loss
+
+### Realtime generation (no save)
+
+Use `src/realtime_generate.py` to emit telemetry rows for a wall-clock duration without writing files.
+The script requires a JSON config file and uses `telemetry_batch_frequency_seconds` as the per-tick cadence for active machines.
+
+```powershell
+python src/realtime_generate.py --config configs/realtime_config.json --duration-seconds 1
+```
+
+Run continuously (stop with Ctrl+C):
+
+```powershell
+python src/realtime_generate.py --config configs/realtime_config.json --continuous
+```
+
+A tiny runner is also available:
+
+```powershell
+python scripts/run_realtime_generate.py
+```
